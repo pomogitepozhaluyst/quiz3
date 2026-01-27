@@ -16,7 +16,7 @@ import {
 } from '@mui/icons-material';
 import { useNavigate, useParams } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Label } from 'recharts';
-import { useTheme } from '../context/ThemeContext';
+import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -24,10 +24,9 @@ import { ru } from 'date-fns/locale';
 const GroupDetail = () => {
   const navigate = useNavigate();
   const { groupId } = useParams();
-  const { isDarkMode, theme } = useTheme();
-  const { token } = useAuth();
+  const { user } = useAuth();
   
-  const [activeTab, setActiveTab] = useState(1);
+  const [activeTab, setActiveTab] = useState(0);
   const [memberSearch, setMemberSearch] = useState('');
   const [testSearch, setTestSearch] = useState('');
   const [statMode, setStatMode] = useState('average');
@@ -42,17 +41,7 @@ const GroupDetail = () => {
   const [groupTests, setGroupTests] = useState([]);
   const [groupStats, setGroupStats] = useState(null);
 
-  const isAdmin = false; // Это можно получить из контекста пользователя
-
-  // Используем цвета из темы
-  const COLORS = {
-    success: theme.palette.success.main,
-    error: theme.palette.error.main,
-    warning: theme.palette.warning.main,
-    info: theme.palette.info.main,
-    primary: theme.palette.primary.main,
-    secondary: theme.palette.secondary.main,
-  };
+  const isCreator = groupData?.created_by === user?.id;
 
   // Функции для API запросов
   const fetchGroupData = async () => {
@@ -61,65 +50,43 @@ const GroupDetail = () => {
       setError(null);
       
       // 1. Получаем информацию о группе
-      const groupResponse = await fetch(`http://localhost:8000/groups/${groupId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-      
-      if (!groupResponse.ok) {
-        throw new Error('Ошибка загрузки данных группы');
-      }
-      
-      const group = await groupResponse.json();
-      setGroupData(group);
+      const groupResponse = await api.get(`/groups/${groupId}`);
+      setGroupData(groupResponse.data);
       
       // 2. Получаем участников группы
-      const membersResponse = await fetch(`http://localhost:8000/groups/${groupId}/members`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-      
-      if (membersResponse.ok) {
-        const membersData = await membersResponse.json();
-        setMembers(membersData);
+      try {
+        const membersResponse = await api.get(`/groups/${groupId}/members`);
+        setMembers(membersResponse.data || []);
+      } catch (membersError) {
+        console.warn('Не удалось загрузить участников:', membersError);
+        setMembers([]);
       }
       
       // 3. Получаем тесты группы
-      const testsResponse = await fetch(`http://localhost:8000/groups/${groupId}/tests`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-      
-      if (testsResponse.ok) {
-        const testsData = await testsResponse.json();
-        setGroupTests(testsData);
+      try {
+        const testsResponse = await api.get(`/groups/${groupId}/tests`);
+        setGroupTests(testsResponse.data || []);
+      } catch (testsError) {
+        console.warn('Не удалось загрузить тесты:', testsError);
+        setGroupTests([]);
       }
       
-      // 4. Получаем статистику группы (если админ/создатель)
-      try {
-        const statsResponse = await fetch(`http://localhost:8000/groups/${groupId}/stats`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
-        
-        if (statsResponse.ok) {
-          const statsData = await statsResponse.json();
-          setGroupStats(statsData);
+      // 4. Получаем статистику группы (если создатель)
+      if (groupResponse.data.created_by === user?.id) {
+        try {
+          const statsResponse = await api.get(`/groups/${groupId}/stats`);
+          setGroupStats(statsResponse.data);
+        } catch (statsError) {
+          console.log('Нет прав на просмотр статистики');
         }
-      } catch (statsError) {
-        // Если нет прав на статистику - игнорируем
-        console.log('Нет прав на просмотр статистики');
       }
       
     } catch (err) {
-      setError(err.message);
+      const errorMsg = err.response?.data?.detail || err.message || 'Ошибка загрузки данных группы';
+      setError(errorMsg);
       setSnackbar({
         open: true,
-        message: `Ошибка загрузки: ${err.message}`,
+        message: errorMsg,
         severity: 'error'
       });
     } finally {
@@ -129,32 +96,18 @@ const GroupDetail = () => {
 
   const handleStartTest = async (testId, assignmentId) => {
     try {
-      // Создаем сессию тестирования
-      const response = await fetch('http://localhost:8000/test-sessions/', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          test_id: testId,
-          assignment_id: assignmentId
-        }),
+      const response = await api.post('/test-sessions/', {
+        test_id: testId,
+        assignment_id: assignmentId
       });
       
-      if (!response.ok) {
-        throw new Error('Ошибка начала теста');
-      }
-      
-      const session = await response.json();
-      
-      // Переходим на страницу тестирования
-      navigate(`/test/${testId}/session/${session.id}`);
+      navigate(`/test/${testId}/session/${response.data.id}`);
       
     } catch (err) {
+      const errorMsg = err.response?.data?.detail || 'Ошибка начала теста';
       setSnackbar({
         open: true,
-        message: `Ошибка: ${err.message}`,
+        message: errorMsg,
         severity: 'error'
       });
     }
@@ -178,11 +131,10 @@ const GroupDetail = () => {
   const calculateMemberStats = useMemo(() => {
     if (!groupStats) return [];
     
-    return groupStats.members.map(member => {
+    return groupStats.members?.map(member => {
       const testScores = member.test_scores || [];
       const scores = testScores.map(score => score.percentage || 0);
       
-      // Заполняем недостающие значения нулями для графика
       const fullScores = [...scores];
       const totalTests = groupStats.total_assignments;
       while (fullScores.length < totalTests) {
@@ -195,7 +147,7 @@ const GroupDetail = () => {
         score: member.average_score || 0,
         tests: fullScores
       };
-    });
+    }) || [];
   }, [groupStats]);
 
   // Данные для графика
@@ -227,14 +179,13 @@ const GroupDetail = () => {
     });
   }, [groupStats, calculateMemberStats, statMode]);
 
-  // Загрузка данных при монтировании и смене группы
+  // Загрузка данных
   useEffect(() => {
-    if (groupId && token) {
+    if (groupId) {
       fetchGroupData();
     }
-  }, [groupId, token]);
+  }, [groupId]);
 
-  // Обновление по кнопке обновить
   const handleRefresh = () => {
     fetchGroupData();
   };
@@ -274,20 +225,20 @@ const GroupDetail = () => {
   }
 
   const filteredTests = groupTests.filter(test => 
-    test.title.toLowerCase().includes(testSearch.toLowerCase()) ||
+    test.title?.toLowerCase().includes(testSearch.toLowerCase()) ||
     (test.description && test.description.toLowerCase().includes(testSearch.toLowerCase()))
   );
 
   const filteredMembers = members.filter(member => 
-    member.username.toLowerCase().includes(memberSearch.toLowerCase()) ||
+    member.username?.toLowerCase().includes(memberSearch.toLowerCase()) ||
     member.first_name?.toLowerCase().includes(memberSearch.toLowerCase()) ||
     member.last_name?.toLowerCase().includes(memberSearch.toLowerCase())
   );
 
   const getScoreColor = (score) => {
-    if (score >= 85) return COLORS.success;
-    if (score >= 60) return COLORS.warning;
-    return COLORS.error;
+    if (score >= 85) return '#2e7d32';
+    if (score >= 60) return '#ed6c02';
+    return '#d32f2f';
   };
 
   const getScorePercentage = (score, maxScore = 100) => {
@@ -343,7 +294,7 @@ const GroupDetail = () => {
       >
         <Tab icon={<People />} label="Участники" iconPosition="start" />
         <Tab icon={<Assignment />} label="Тесты" iconPosition="start" />
-        <Tab icon={<TrendingUp />} label="Успеваемость" iconPosition="start" />
+        {isCreator && <Tab icon={<TrendingUp />} label="Успеваемость" iconPosition="start" />}
       </Tabs>
 
       {/* УЧАСТНИКИ */}
@@ -372,7 +323,6 @@ const GroupDetail = () => {
           ) : (
             <List disablePadding>
               {filteredMembers.map((member, i) => {
-                // Для сортировки по успеваемости (если есть статистика)
                 const memberStat = calculateMemberStats.find(ms => ms.id === member.id);
                 const score = memberStat?.score || 0;
                 
@@ -446,7 +396,7 @@ const GroupDetail = () => {
                 ) 
               }} 
             />
-            {isAdmin && (
+            {isCreator && (
               <Button 
                 variant="contained" 
                 startIcon={<Add />} 
@@ -492,7 +442,7 @@ const GroupDetail = () => {
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1 }}>
                             {latestSession?.is_completed ? (
                               <CheckCircleOutline sx={{ 
-                                color: isPassed ? COLORS.success : COLORS.error 
+                                color: isPassed ? '#2e7d32' : '#d32f2f' 
                               }} />
                             ) : (
                               <Assignment color={isTestActive ? "primary" : "disabled"} />
@@ -510,7 +460,7 @@ const GroupDetail = () => {
                                     label={isPassed ? "Пройден" : "Не пройден"} 
                                     size="small" 
                                     sx={{ 
-                                      backgroundColor: isPassed ? COLORS.success : COLORS.error,
+                                      backgroundColor: isPassed ? '#2e7d32' : '#d32f2f',
                                       color: 'white',
                                       fontWeight: 500
                                     }}
@@ -552,7 +502,7 @@ const GroupDetail = () => {
                                   component="span" 
                                   variant="caption" 
                                   sx={{ 
-                                    color: COLORS.success,
+                                    color: '#2e7d32',
                                     fontWeight: 500,
                                     ml: 1
                                   }}
@@ -564,7 +514,7 @@ const GroupDetail = () => {
                                   component="span" 
                                   variant="caption" 
                                   sx={{ 
-                                    color: COLORS.error,
+                                    color: '#d32f2f',
                                     fontWeight: 500,
                                     ml: 1
                                   }}
@@ -583,8 +533,8 @@ const GroupDetail = () => {
                                 backgroundColor: 'action.disabledBackground',
                                 '& .MuiLinearProgress-bar': {
                                   backgroundColor: test.attempts_used === test.max_attempts 
-                                    ? COLORS.error 
-                                    : COLORS.warning
+                                    ? '#d32f2f' 
+                                    : '#ed6c02'
                                 }
                               }}
                             />
@@ -605,7 +555,7 @@ const GroupDetail = () => {
                                   component="span" 
                                   variant="caption" 
                                   sx={{ 
-                                    color: latestSession.is_completed ? COLORS.success : COLORS.error,
+                                    color: latestSession.is_completed ? '#2e7d32' : '#d32f2f',
                                     ml: 1
                                   }}
                                 >
@@ -672,7 +622,7 @@ const GroupDetail = () => {
 
                           {/* Кнопка действия */}
                           <Box sx={{ mt: 1 }}>
-                            {isAdmin ? (
+                            {isCreator ? (
                               <Box sx={{ display: 'flex', gap: 0.5 }}>
                                 <IconButton size="small">
                                   <Edit fontSize="small" />
@@ -695,10 +645,10 @@ const GroupDetail = () => {
                                       fontWeight: 600,
                                       px: 2,
                                       py: 1,
-                                      backgroundColor: latestSession?.is_completed ? COLORS.warning : theme.palette.primary.main,
+                                      backgroundColor: latestSession?.is_completed ? '#ed6c02' : '#1976d2',
                                       color: 'white',
                                       '&:hover': {
-                                        backgroundColor: latestSession?.is_completed ? '#ed6c02' : theme.palette.primary.dark
+                                        backgroundColor: latestSession?.is_completed ? '#ed6c02' : '#1976d2'
                                       }
                                     }}
                                   >
@@ -740,7 +690,7 @@ const GroupDetail = () => {
       )}
 
       {/* УСПЕВАЕМОСТЬ */}
-      {activeTab === 2 && (
+      {activeTab === 2 && isCreator && (
         <>
           {!groupStats ? (
             <Alert severity="warning">
@@ -780,7 +730,7 @@ const GroupDetail = () => {
                       <TableRow>
                         <TableCell sx={{ 
                           fontWeight: '900', 
-                          borderBottom: `2px solid ${theme.palette.text.primary}` 
+                          borderBottom: `2px solid #000` 
                         }}>
                           УЧЕНИК
                         </TableCell>
@@ -790,7 +740,7 @@ const GroupDetail = () => {
                             align="center" 
                             sx={{ 
                               fontWeight: '900', 
-                              borderBottom: `2px solid ${theme.palette.text.primary}` 
+                              borderBottom: `2px solid #000` 
                             }}
                           >
                             {test.name.replace('Тест ', 'Т')}
@@ -800,7 +750,7 @@ const GroupDetail = () => {
                           align="center" 
                           sx={{ 
                             fontWeight: '900', 
-                            borderBottom: `2px solid ${theme.palette.text.primary}`, 
+                            borderBottom: `2px solid #000`, 
                             bgcolor: 'action.hover' 
                           }}
                         >
@@ -856,61 +806,48 @@ const GroupDetail = () => {
                       <CartesianGrid 
                         strokeDasharray="3 3" 
                         vertical={false} 
-                        stroke={theme.palette.divider} 
+                        stroke="#e0e0e0" 
                       />
                       <XAxis 
                         dataKey="name" 
-                        tick={{
-                          fill: theme.palette.text.secondary, 
-                          fontSize: 11
-                        }} 
-                        axisLine={{
-                          stroke: theme.palette.divider
-                        }}
+                        tick={{ fill: '#666', fontSize: 11 }} 
+                        axisLine={{ stroke: '#e0e0e0' }}
                       >
                         <Label 
                           value="Тесты" 
                           offset={-10} 
                           position="insideBottom" 
-                          fill={theme.palette.text.secondary} 
+                          fill="#666" 
                         />
                       </XAxis>
                       <YAxis 
-                        tick={{
-                          fill: theme.palette.text.secondary, 
-                          fontSize: 11
-                        }} 
-                        axisLine={{
-                          stroke: theme.palette.divider
-                        }}
+                        tick={{ fill: '#666', fontSize: 11 }} 
+                        axisLine={{ stroke: '#e0e0e0' }}
                       >
                         <Label 
                           value="Баллы" 
                           angle={-90} 
                           position="insideLeft" 
-                          style={{ 
-                            textAnchor: 'middle', 
-                            fill: theme.palette.text.secondary 
-                          }} 
+                          style={{ textAnchor: 'middle', fill: '#666' }} 
                         />
                       </YAxis>
                       <RechartsTooltip 
                         contentStyle={{ 
-                          backgroundColor: theme.palette.background.paper, 
-                          border: `1px solid ${theme.palette.divider}`, 
+                          backgroundColor: '#fff', 
+                          border: '1px solid #e0e0e0', 
                           borderRadius: 0 
                         }} 
                       />
                       <Line 
                         type="monotone" 
                         dataKey="value" 
-                        stroke={theme.palette.primary.main} 
+                        stroke="#1976d2" 
                         strokeWidth={3} 
                         dot={{ 
                           r: 5, 
-                          fill: theme.palette.primary.main, 
+                          fill: '#1976d2', 
                           strokeWidth: 2, 
-                          stroke: theme.palette.background.paper 
+                          stroke: '#fff' 
                         }} 
                       />
                     </LineChart>
