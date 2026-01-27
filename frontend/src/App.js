@@ -50,6 +50,7 @@ const ThemedApp = () => {
           <Route path="/groups/:groupId" element={<ProtectedRoute><GroupDetail /></ProtectedRoute>} />
           <Route path="/test/:testId/intro" element={<ProtectedRoute><TestIntro /></ProtectedRoute>} />
           <Route path="/test/:testId/take" element={<ProtectedRoute><TakeTest /></ProtectedRoute>} />
+          <Route path="/edit-test/:testId" element={<CreateTest />} />
           <Route path="/groups/create" element={<CreateGroup />} />
         </Routes>
       </Router>

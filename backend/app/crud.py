@@ -1,4 +1,5 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload, Session
+
 from typing import List, Optional
 import random
 from . import models, schemas
@@ -238,30 +239,124 @@ def create_test_session(db: Session, session: schemas.TestSessionCreate, user_id
     print(f"✅ Сессия создана с ID: {db_session.id}")
     return db_session
 
-def add_user_answer(db: Session, answer: schemas.UserAnswerCreate, session_id: int):
-    # Get question and check if answer is correct
-    question = get_question(db, answer.question_id)
+def add_user_answer(db: Session, answer: schemas.UserAnswerCreate, session_id: int, test_id: int = None):
+    print("=" * 40)
+    print("🎯 CRUD: сохранение ответа с проверкой")
+    print(f"📦 Данные: {answer.dict()}")
+    
+    # Получаем вопрос
+    question = db.query(models.Question).filter(
+        models.Question.id == answer.question_id
+    ).first()
+    
     if not question:
+        print(f"❌ Вопрос {answer.question_id} не найден")
         return None
+    
+    print(f"✅ Вопрос найден: {question.question_text[:50]}...")
+    print(f"📊 Тип ответа ID: {question.answer_type_id}")
+    
+    # Получаем варианты ответов
+    answer_options = db.query(models.AnswerOption).filter(
+        models.AnswerOption.question_id == question.id
+    ).all()
+    
+    print(f"📊 Вариантов ответа: {len(answer_options)}")
     
     is_correct = False
     points_earned = 0
     
-    # For single/multiple choice questions
-    if question.type.has_options and answer.selected_options:
-        correct_options = [opt.id for opt in question.answer_options if opt.is_correct]
-        selected_options = [int(x) for x in answer.selected_options.split(',')]
-        is_correct = set(selected_options) == set(correct_options)
+    # Получаем баллы за вопрос
+    points = 1
+    if test_id:
+        test_question = db.query(models.TestQuestion).filter(
+            models.TestQuestion.test_id == test_id,
+            models.TestQuestion.question_id == answer.question_id
+        ).first()
+        if test_question:
+            points = test_question.points
+            print(f"📊 Баллы из TestQuestion: {points}")
+    
+    # ОТЛАДКА: показываем правильные варианты
+    correct_option_ids = [opt.id for opt in answer_options if opt.is_correct]
+    correct_option_texts = [opt.option_text for opt in answer_options if opt.is_correct]
+    print(f"🔍 Правильные ID вариантов: {correct_option_ids}")
+    print(f"🔍 Правильные тексты вариантов: {correct_option_texts}")
+    
+    # ПАРСИМ ВЫБРАННЫЕ ВАРИАНТЫ
+    selected_option_ids = []
+    if answer.selected_options:
+        try:
+            import json
+            selected_option_ids = json.loads(answer.selected_options)
+            print(f"🔍 Выбранные ID (из JSON): {selected_option_ids}")
+        except:
+            print("⚠️ Не JSON, пробуем как строку")
+            # ... парсинг строки
+    
+    # ПРОВЕРЯЕМ ПРАВИЛЬНОСТЬ ПО ТИПУ ОТВЕТА
+    if question.answer_type_id == 2:  # single_choice (один вариант)
+        print(f"🔍 Проверка single_choice")
+        print(f"  Выбрано: {selected_option_ids}")
+        print(f"  Правильные: {correct_option_ids}")
         
-    # For text answers
-    elif answer.answer_text:
-        # Simple exact match for now - can be improved with fuzzy matching
-        correct_answers = [opt.option_text.lower().strip() for opt in question.answer_options if opt.is_correct]
-        is_correct = answer.answer_text.lower().strip() in correct_answers
+        # Для single_choice должен быть выбран ровно один правильный вариант
+        if len(selected_option_ids) == 1:
+            is_correct = selected_option_ids[0] in correct_option_ids
+            print(f"  Результат: {is_correct} (выбран {selected_option_ids[0]}, правильные {correct_option_ids})")
+        else:
+            print(f"  ❌ Для single_choice нужно выбрать ровно один вариант")
     
+    elif question.answer_type_id == 3:  # multiple_choice (несколько)
+        print(f"🔍 Проверка multiple_choice")
+        print(f"  Выбрано: {selected_option_ids}")
+        print(f"  Правильные: {correct_option_ids}")
+        
+        # Для multiple_choice все правильные должны быть выбраны и ничего лишнего
+        if correct_option_ids and selected_option_ids:
+            is_correct = (set(selected_option_ids) == set(correct_option_ids))
+            print(f"  Результат: {is_correct} (сравнение множеств)")
+        else:
+            print(f"  ❌ Нет правильных вариантов или ничего не выбрано")
+    
+    elif question.answer_type_id == 1:  # text (текстовый)
+        print(f"🔍 Проверка текстового ответа")
+        
+        if answer.answer_text:
+            user_answer = answer.answer_text.strip().lower()
+            
+            # 1. Проверяем правильный ответ из поля correct_answer
+            if question.correct_answer:
+                correct_answer = question.correct_answer.strip().lower()
+                print(f"  Правильный ответ из correct_answer: '{correct_answer}'")
+                print(f"  Ответ пользователя: '{user_answer}'")
+                
+                if user_answer == correct_answer:
+                    is_correct = True
+                    print(f"  ✅ Совпадение с correct_answer!")
+            
+            # 2. Если не совпало, проверяем варианты ответов
+            if not is_correct and answer_options:
+                for option in answer_options:
+                    if option.is_correct:
+                        option_text = option.option_text.strip().lower()
+                        print(f"  Проверка с вариантом: '{option_text}'")
+                        
+                        if user_answer == option_text:
+                            is_correct = True
+                            print(f"  ✅ Совпадение с вариантом {option.id}!")
+                            break
+    
+    print(f"🎯 ИТОГ: Правильность = {is_correct}")
+    
+    # Начисляем баллы
     if is_correct:
-        points_earned = question.points
+        points_earned = points
+        print(f"🎉 Правильно! Начислено {points_earned} баллов")
+    else:
+        print(f"❌ Неправильно, баллы: 0")
     
+    # СОХРАНЯЕМ ОТВЕТ
     db_answer = models.UserAnswer(
         session_id=session_id,
         question_id=answer.question_id,
@@ -271,17 +366,49 @@ def add_user_answer(db: Session, answer: schemas.UserAnswerCreate, session_id: i
         is_correct=is_correct,
         points_earned=points_earned
     )
+    
     db.add(db_answer)
     db.commit()
     db.refresh(db_answer)
     
-    # Update session score
-    session = db.query(models.TestSession).filter(models.TestSession.id == session_id).first()
-    if session:
-        session.score = sum(ua.points_earned for ua in session.user_answers)
-        session.percentage = int((session.score / session.max_score) * 100) if session.max_score > 0 else 0
-        db.commit()
+    print(f"💾 Ответ сохранен в БД с ID: {db_answer.id}")
     
+    # ОБНОВЛЯЕМ СЧЕТ СЕССИИ
+    session = db.query(models.TestSession).filter(
+        models.TestSession.id == session_id
+    ).first()
+    
+    if session:
+        # Пересчитываем ВЕСЬ счет
+        total_points = db.query(func.sum(models.UserAnswer.points_earned)).filter(
+            models.UserAnswer.session_id == session_id
+        ).scalar() or 0
+        
+        session.score = int(total_points)
+        
+        # Пересчитываем максимальный балл
+        if test_id:
+            test_questions = db.query(models.TestQuestion).filter(
+                models.TestQuestion.test_id == test_id
+            ).all()
+            max_score = sum(tq.points for tq in test_questions)
+        else:
+            # Оцениваем примерно
+            questions_count = db.query(models.UserAnswer).filter(
+                models.UserAnswer.session_id == session_id
+            ).count()
+            max_score = questions_count * 5  # примерно
+        
+        if max_score > 0:
+            session.max_score = max_score
+            session.percentage = int((session.score / max_score) * 100)
+        else:
+            session.percentage = 0
+        
+        db.commit()
+        print(f"📊 Обновлен счет сессии: {session.score}/{session.max_score} ({session.percentage}%)")
+    
+    print("=" * 40)
     return db_answer
 
 from sqlalchemy import func

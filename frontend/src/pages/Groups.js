@@ -7,7 +7,7 @@ import {
 } from '@mui/material';
 import { 
   Search, Add, Lock, LockOpen, QrCode, 
-  Psychology, AccountCircle, Refresh
+  Psychology, AccountCircle, Schedule 
 } from '@mui/icons-material';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -49,59 +49,27 @@ const Groups = () => {
     severity: 'info' 
   });
 
-  // Загрузка данных с таймаутом
+  // Загрузка данных
+  useEffect(() => {
+    loadData();
+  }, []);
+
   const loadData = async () => {
     try {
       setLoading(true);
+      
+      // Загружаем только все группы
+      const response = await api.get('/groups/');
+      setGroups(response.data || []);
       setError('');
-      console.log('🔄 Начинаем загрузку групп...');
-      
-      // Добавляем таймаут на случай если запрос завис
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Таймаут запроса')), 10000)
-      );
-      
-      const apiPromise = api.get('/groups/');
-      
-      // Используем Promise.race с таймаутом
-      const response = await Promise.race([apiPromise, timeoutPromise]);
-      
-      console.log('✅ Ответ от сервера:', response?.data);
-      setGroups(response?.data || []);
-      
     } catch (err) {
-      console.error('❌ Ошибка загрузки групп:', {
-        message: err.message,
-        response: err.response,
-        stack: err.stack
-      });
-      
-      let errorMessage = 'Не удалось загрузить группы';
-      
-      if (err.message === 'Таймаут запроса') {
-        errorMessage = 'Сервер не отвечает. Проверьте подключение к бэкенду.';
-      } else if (err.response?.status === 401) {
-        errorMessage = 'Не авторизован. Пожалуйста, войдите снова.';
-        navigate('/login');
-      } else if (err.response?.status === 404) {
-        errorMessage = 'Эндпоинт /groups/ не найден на сервере.';
-      } else if (err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      } else if (err.message) {
-        errorMessage = err.message;
-      }
-      
-      setError(errorMessage);
-      showSnackbar(errorMessage, 'error');
+      console.error('Ошибка загрузки:', err);
+      setError('Не удалось загрузить группы');
+      showSnackbar('Ошибка загрузки групп', 'error');
     } finally {
       setLoading(false);
     }
   };
-
-  // Загрузка при монтировании
-  useEffect(() => {
-    loadData();
-  }, []);
 
   const showSnackbar = (message, severity = 'info') => {
     setSnackbar({ open: true, message, severity });
@@ -119,7 +87,7 @@ const Groups = () => {
     }
 
     try {
-      const response = await api.post('/groups/', newGroup);
+      await api.post('/groups/', newGroup);
       showSnackbar('Группа успешно создана!', 'success');
       setShowCreateDialog(false);
       setNewGroup({
@@ -132,9 +100,8 @@ const Groups = () => {
         password: '',
         require_approval: false
       });
-      loadData();
+      loadData(); // Обновляем список
     } catch (err) {
-      console.error('Ошибка создания группы:', err);
       showSnackbar(err.response?.data?.detail || 'Ошибка создания группы', 'error');
     }
   };
@@ -226,58 +193,10 @@ const Groups = () => {
     (g.subject && g.subject.toLowerCase().includes(search.toLowerCase()))
   );
 
-  // Экран загрузки
   if (loading) {
     return (
-      <Container maxWidth="lg" sx={{ 
-        py: 4, 
-        display: 'flex', 
-        flexDirection: 'column', 
-        alignItems: 'center', 
-        justifyContent: 'center',
-        minHeight: '50vh'
-      }}>
-        <CircularProgress size={60} sx={{ mb: 3 }} />
-        <Typography variant="h6" color="text.secondary" sx={{ mb: 2 }}>
-          Загрузка групп...
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Пожалуйста, подождите
-        </Typography>
-      </Container>
-    );
-  }
-
-  // Экран ошибки
-  if (error) {
-    return (
-      <Container maxWidth="lg" sx={{ py: 4 }}>
-        <Paper sx={{ p: 4, textAlign: 'center' }}>
-          <Psychology sx={{ fontSize: 60, color: 'error.main', mb: 2, opacity: 0.7 }} />
-          <Typography variant="h5" color="error" gutterBottom>
-            Ошибка загрузки
-          </Typography>
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-            {error}
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center' }}>
-            <Button
-              variant="contained"
-              startIcon={<Refresh />}
-              onClick={loadData}
-              sx={{ borderRadius: '12px', textTransform: 'none' }}
-            >
-              Попробовать снова
-            </Button>
-            <Button
-              variant="outlined"
-              onClick={() => navigate('/dashboard')}
-              sx={{ borderRadius: '12px', textTransform: 'none' }}
-            >
-              На главную
-            </Button>
-          </Box>
-        </Paper>
+      <Container sx={{ py: 4, textAlign: 'center' }}>
+        <CircularProgress />
       </Container>
     );
   }
@@ -324,10 +243,15 @@ const Groups = () => {
         />
       </Paper>
 
-      {/* Информация о количестве групп */}
-      <Alert severity="info" sx={{ mb: 3 }}>
-        Найдено {filteredGroups.length} групп
-      </Alert>
+      {/* Ошибка */}
+      {error && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          {error}
+          <Button onClick={loadData} sx={{ ml: 2 }} size="small">
+            Повторить
+          </Button>
+        </Alert>
+      )}
 
       {/* Список групп */}
       <Grid container spacing={3}>
@@ -355,14 +279,6 @@ const Groups = () => {
           filteredGroups.map((group) => {
             const isCreator = group.created_by === user?.id;
             const typeInfo = getGroupTypeInfo(group);
-            
-            // Определяем текст кнопки
-            let buttonText = 'Вступить';
-            if (isCreator) {
-              buttonText = 'Моя группа';
-            } else if (!group.is_public && group.password) {
-              buttonText = 'Ввести пароль';
-            }
             
             return (
               <Grid item xs={12} md={6} key={group.id}>
@@ -414,6 +330,12 @@ const Groups = () => {
                             {group.subject}
                           </Typography>
                         )}
+                        
+                        {group.academic_year && (
+                          <Typography variant="caption" color="text.secondary">
+                            {group.academic_year}
+                          </Typography>
+                        )}
                       </Box>
                     </Box>
                   </Box>
@@ -424,7 +346,8 @@ const Groups = () => {
                     onClick={() => handleJoinClick(group)}
                     sx={{ borderRadius: '8px', textTransform: 'none' }}
                   >
-                    {buttonText}
+                    {isCreator ? 'Моя группа' : 
+                     (group.is_public ? 'Вступить' : 'Ввести пароль')}
                   </Button>
                 </Card>
               </Grid>
