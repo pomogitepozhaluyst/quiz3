@@ -67,8 +67,8 @@ class QuestionBase(BaseModel):
     time_limit: int = 60
     points: int = 1
     media_url: Optional[str] = None
-    sources: Optional[str] = None  # новое поле
-    allow_latex: bool = False  # новое поле
+    sources: Optional[str] = None
+    allow_latex: bool = False
     blackbox_description: Optional[str] = None
     correct_answer: Optional[str] = None
     answer_requirements: Optional[str] = None
@@ -76,12 +76,13 @@ class QuestionBase(BaseModel):
 class QuestionCreate(QuestionBase):
     answer_options: Optional[List[AnswerOptionCreate]] = None
     correct_answer: Optional[str] = None
-    # Убедитесь, что эти поля есть:
     media_url: Optional[str] = None
     sources: Optional[str] = None
     allow_latex: bool = False
     blackbox_description: Optional[str] = None
     answer_requirements: Optional[str] = None
+
+# schemas.py - обновляем QuestionResponse
 
 class QuestionResponse(QuestionBase):
     id: int
@@ -90,7 +91,8 @@ class QuestionResponse(QuestionBase):
     created_at: datetime
     updated_at: datetime
     answer_options: List[AnswerOptionResponse] = []
-    answer_type: Optional[AnswerTypeResponse] = None  # Добавляем информацию о типе ответа
+    answer_type: Optional[AnswerTypeResponse] = None
+    answer_type_id: int  # ← Добавляем это поле!
     
     class Config:
         from_attributes = True
@@ -111,7 +113,7 @@ class TestAccessResponse(TestAccessBase):
     class Config:
         from_attributes = True
 
-# Test schemas
+# Test Question schemas
 class TestQuestionBase(BaseModel):
     question_id: int
     points: int = 1
@@ -129,6 +131,7 @@ class TestQuestionWithQuestion(BaseModel):
     class Config:
         from_attributes = True
 
+# Test schemas
 class TestBase(BaseModel):
     title: str
     description: Optional[str] = None
@@ -155,22 +158,19 @@ class TestResponse(TestBase):
     class Config:
         from_attributes = True
 
+# Study Group schemas
 class StudyGroupBase(BaseModel):
     name: str
     description: Optional[str] = None
     subject: Optional[str] = None
     academic_year: Optional[str] = None
     max_students: int = 30
-    # ДОБАВЛЯЕМ ТОЛЬКО ЭТО:
-    is_public: bool = True  # True = открытая, False = закрытая (по паролю)
-    password: Optional[str] = None  # пароль для закрытых групп (null для открытых)
-    require_approval: bool = False  # нужно ли одобрение
+    is_public: bool = True
+    password: Optional[str] = None
+    require_approval: bool = False
 
 class StudyGroupCreate(StudyGroupBase):
     pass
-
-
-
 
 class StudyGroupResponse(BaseModel):
     id: int
@@ -186,25 +186,46 @@ class StudyGroupResponse(BaseModel):
     created_by: int
     is_active: bool
     created_at: datetime
-    # ВАЖНО: Эти поля должны быть в схеме!
     members_count: Optional[int] = None
     user_role: Optional[str] = None
     
     class Config:
         from_attributes = True
-# В schemas.py
+
 class StudyGroupWithDetailsResponse(StudyGroupResponse):
-    """Схема с дополнительными полями для моих групп"""
     members_count: int
     user_role: str
     
     class Config:
         from_attributes = True
-# Новая схема для вступления в группу
+
+# Group Join Request
 class GroupJoinRequest(BaseModel):
     group_id: Optional[int] = None
     invite_code: Optional[str] = None
     password: Optional[str] = None
+
+# Test Assignment schemas
+class TestAssignmentBase(BaseModel):
+    test_id: int
+    group_id: int
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    time_limit: Optional[int] = None
+    max_attempts: Optional[int] = None
+    passing_score: Optional[int] = None
+
+class TestAssignmentCreate(TestAssignmentBase):
+    pass
+
+class TestAssignmentResponse(TestAssignmentBase):
+    id: int
+    assigned_by: int
+    is_active: bool
+    created_at: str
+    
+    class Config:
+        from_attributes = True
 
 # Test Session schemas
 class UserAnswerBase(BaseModel):
@@ -214,8 +235,8 @@ class UserAnswerBase(BaseModel):
     time_spent: int
 
 class UserAnswerCreate(UserAnswerBase):
-    pass
-
+    test_id: Optional[int] = None  # Добавьте это поле
+    
 class UserAnswerResponse(UserAnswerBase):
     id: int
     is_correct: bool
@@ -260,3 +281,90 @@ class UserStatisticsResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+# Category schemas
+class CategoryResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    color: Optional[str] = None
+    icon: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+# Question Type schemas
+class QuestionTypeResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+# Achievement schemas
+class AchievementResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    reward_points: int
+    
+    class Config:
+        from_attributes = True
+
+# User Achievement schemas
+class UserAchievementResponse(BaseModel):
+    id: int
+    achievement_id: int
+    earned_at: datetime
+    progress: int
+    achievement: Optional[AchievementResponse] = None
+    
+    class Config:
+        from_attributes = True
+
+# Grading System schemas
+class GradingSystemResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    rules: str
+    is_default: bool
+    
+    class Config:
+        from_attributes = True
+
+
+class TestAssignmentUpdate(BaseModel):
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    time_limit: Optional[int] = None
+    max_attempts: Optional[int] = None
+    passing_score: Optional[int] = None
+
+class ImportQuestionBase(BaseModel):
+    question_text: str
+    question_type: str = "text"  # text, single_choice, multiple_choice, blackbox
+    correct_answer: Optional[str] = None
+    options: Optional[List[str]] = None
+    correct_options: Optional[List[str]] = None  # Для выбора нескольких вариантов
+    category: str = "Общие знания"
+    difficulty: int = 1
+    points: int = 1
+    explanation: Optional[str] = None
+
+class FileImportRequest(BaseModel):
+    file_type: str = "excel"  # excel, csv
+    category_id: Optional[int] = None
+    default_difficulty: int = 1
+    default_points: int = 1
+
+class QuestionImportResponse(BaseModel):
+    imported_count: int
+    failed_count: int
+    questions: List[ImportQuestionBase]
+    errors: List[str] = []
+
+    class Config:
+        from_attributes = True  
