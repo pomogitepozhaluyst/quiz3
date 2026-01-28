@@ -7,7 +7,7 @@ import {
 } from '@mui/material';
 import { 
   Search, Add, Lock, LockOpen, QrCode, 
-  Psychology, AccountCircle, Schedule, CheckCircle
+  Psychology, AccountCircle, CheckCircle
 } from '@mui/icons-material';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -42,9 +42,6 @@ const Groups = () => {
   const [inviteCode, setInviteCode] = useState('');
   const [password, setPassword] = useState('');
   
-  // Состояние для отслеживания вступления
-  const [joiningGroups, setJoiningGroups] = useState({});
-  
   // Уведомления
   const [snackbar, setSnackbar] = useState({ 
     open: false, 
@@ -57,67 +54,63 @@ const Groups = () => {
     loadData();
   }, []);
 
-  const loadData = async () => {
+ const loadData = async () => {
     try {
       setLoading(true);
       
-      console.log('📥 Загрузка данных групп...');
+      // Загружаем все группы
+      const response = await api.get('/groups/');
+      const groupsData = response.data || [];
       
-      // 1. Загружаем все публичные группы
-      const publicGroupsResponse = await api.get('/groups/');
-      const publicGroups = publicGroupsResponse.data || [];
-      console.log('📊 Публичных групп:', publicGroups.length);
+      console.log('📊 Полученные группы:', groupsData);
       
-      // 2. Загружаем группы где пользователь уже участник
-      let myGroups = [];
-      try {
-        const myGroupsResponse = await api.get('/groups/my');
-        myGroups = myGroupsResponse.data || [];
-        console.log('📊 Моих групп:', myGroups.length);
-      } catch (myGroupsError) {
-        console.log('⚠️ Не удалось загрузить мои группы:', myGroupsError.message);
-      }
+      // Для каждой группы проверяем, является ли пользователь участником
+      const groupsWithMembership = await Promise.all(
+        groupsData.map(async (group) => {
+          try {
+            // Получаем участников группы (если доступно)
+            let membersCount = 0;
+            let isMember = false;
+            let isCreator = group.created_by === user?.id;
+            
+            try {
+              const membersResponse = await api.get(`/groups/${group.id}/members`);
+              const members = membersResponse.data || [];
+              membersCount = members.length;
+              isMember = members.some(member => member.id === user?.id);
+            } catch (membersError) {
+              // Если нет доступа к участникам, используем данные из group если есть
+              if (group.members_count !== undefined) {
+                membersCount = group.members_count;
+              }
+              // Для определения isMember можно попробовать другие методы
+              if (membersError.response?.status === 403) {
+                isMember = false; // 403 значит не участник
+              }
+            }
+            
+            return {
+              ...group,
+              members_count: membersCount, // Используем либо из API, либо из group
+              is_member: isMember || isCreator,
+              is_creator: isCreator
+            };
+          } catch (error) {
+            console.log(`Ошибка обработки группы ${group.id}:`, error);
+            return {
+              ...group,
+              members_count: group.members_count || 0,
+              is_member: group.created_by === user?.id,
+              is_creator: group.created_by === user?.id
+            };
+          }
+        })
+      );
       
-      // 3. Объединяем и обновляем статус
-      const allGroupsMap = new Map();
-      
-      // Сначала добавляем мои группы
-      myGroups.forEach(group => {
-        allGroupsMap.set(group.id, {
-          ...group,
-          is_my_group: true,
-          am_i_member: true,
-          am_i_creator: group.created_by === user?.id
-        });
-      });
-      
-      // Затем добавляем публичные группы
-      publicGroups.forEach(group => {
-        if (!allGroupsMap.has(group.id)) {
-          // Проверяем, не создатель ли я этой группы
-          const isCreator = group.created_by === user?.id;
-          allGroupsMap.set(group.id, {
-            ...group,
-            is_my_group: isCreator,
-            am_i_member: isCreator, // Создатель автоматически участник
-            am_i_creator: isCreator
-          });
-        }
-      });
-      
-      const allGroups = Array.from(allGroupsMap.values());
-      
-      console.log('📈 Всего групп:', allGroups.length);
-      console.log('👥 Статистика:', {
-        участник: allGroups.filter(g => g.am_i_member).length,
-        создатель: allGroups.filter(g => g.am_i_creator).length
-      });
-      
-      setGroups(allGroups);
+      setGroups(groupsWithMembership);
       setError('');
-      
     } catch (err) {
-      console.error('❌ Ошибка загрузки:', err);
+      console.error('Ошибка загрузки:', err);
       setError('Не удалось загрузить группы');
       showSnackbar('Ошибка загрузки групп', 'error');
     } finally {
@@ -193,58 +186,35 @@ const Groups = () => {
 
   // ========== ВСТУПЛЕНИЕ В ГРУППУ ==========
   const handleJoinClick = async (group) => {
-    console.log('🎯 Нажата кнопка для группы:', group.name, 'ID:', group.id);
+    console.log('🔄 Попытка вступления в группу:', group.name);
     
     // Если уже участник или создатель - переходим в группу
-    if (group.am_i_member || group.am_i_creator) {
-      console.log('✅ Уже участник/создатель, переходим...');
+    if (group.is_member || group.is_creator) {
+      console.log('✅ Уже участник/создатель, переходим в группу');
       navigate(`/groups/${group.id}`);
       return;
     }
     
-    // Устанавливаем состояние загрузки для этой группы
-    setJoiningGroups(prev => ({ ...prev, [group.id]: true }));
-    
-    try {
-      // Проверяем тип группы
-      if (group.is_public || !group.password) {
-        // Открытая группа - вступаем сразу
-        console.log('🔓 Открытая группа, вступаем...');
-        await joinGroup(group.id, null);
-      } else {
-        // Закрытая группа - спрашиваем пароль
-        console.log('🔒 Закрытая группа, запрашиваем пароль');
-        setShowPasswordDialog(group);
-      }
-    } finally {
-      // Снимаем состояние загрузки
-      setJoiningGroups(prev => ({ ...prev, [group.id]: false }));
+    // Проверяем тип группы
+    if (group.is_public || !group.password) {
+      // Открытая группа - вступаем сразу
+      console.log('🔓 Открытая группа, вступаем...');
+      await joinGroup(group.id, null);
+    } else {
+      // Закрытая группа - спрашиваем пароль
+      console.log('🔒 Закрытая группа, запрашиваем пароль');
+      setShowPasswordDialog(group);
     }
   };
 
   const joinGroup = async (groupId, password = null) => {
     try {
-      console.log('🔄 Вступление в группу ID:', groupId);
+      console.log('🔄 Отправляем запрос на вступление в группу:', groupId);
       
       const config = password ? { params: { password } } : {};
       
       const response = await api.post(`/groups/join/${groupId}`, null, config);
       console.log('✅ Успешное вступление:', response.data);
-      
-      // Обновляем UI немедленно
-      setGroups(prevGroups => 
-        prevGroups.map(group => {
-          if (group.id === groupId) {
-            return {
-              ...group,
-              is_my_group: true,
-              am_i_member: true,
-              am_i_creator: false
-            };
-          }
-          return group;
-        })
-      );
       
       showSnackbar(response.data?.message || 'Вы успешно вступили в группу!', 'success');
       
@@ -254,9 +224,18 @@ const Groups = () => {
         setPassword('');
       }
       
+      // Обновляем статус группы в UI
+      setGroups(prevGroups => 
+        prevGroups.map(group => 
+          group.id === groupId 
+            ? { ...group, is_member: true }
+            : group
+        )
+      );
+      
       // Переходим в группу через 0.5 секунды
       setTimeout(() => {
-        console.log(`🔄 Автоматический переход в группу /groups/${groupId}`);
+        console.log(`🔄 Переходим в группу /groups/${groupId}`);
         navigate(`/groups/${groupId}`);
       }, 500);
       
@@ -267,7 +246,28 @@ const Groups = () => {
         message: err.message
       });
       
-      const errorMsg = err.response?.data?.detail || `Ошибка вступления: ${err.message}`;
+      // Если ошибка "уже состоите", обновляем статус и переходим
+      if (err.response?.data?.detail?.includes('уже состоите')) {
+        console.log('ℹ️ Уже состоим в группе, обновляем статус...');
+        
+        // Обновляем статус в UI
+        setGroups(prevGroups => 
+          prevGroups.map(group => 
+            group.id === groupId 
+              ? { ...group, is_member: true }
+              : group
+          )
+        );
+        
+        // Переходим в группу
+        setTimeout(() => {
+          navigate(`/groups/${groupId}`);
+        }, 500);
+        
+        return;
+      }
+      
+      const errorMsg = err.response?.data?.detail || 'Ошибка вступления в группу';
       showSnackbar(errorMsg, 'error');
     }
   };
@@ -376,8 +376,8 @@ const Groups = () => {
           </Grid>
         ) : (
           filteredGroups.map((group) => {
-            const isCreator = group.am_i_creator;
-            const isMember = group.am_i_member;
+            const isCreator = group.is_creator;
+            const isMember = group.is_member;
             const typeInfo = getGroupTypeInfo(group);
             
             return (
@@ -398,23 +398,22 @@ const Groups = () => {
                     </Avatar>
                     
                     <Box sx={{ flex: 1 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                         <Typography variant="h6" fontWeight="bold">
                           {group.name}
                         </Typography>
                         
-                        {/* Статус пользователя */}
                         {isCreator && (
                           <Chip
                             label="Создатель"
                             size="small"
                             sx={{ 
                               backgroundColor: 'primary.main',
-                              color: 'white',
-                              fontWeight: 500
+                              color: 'white'
                             }}
                           />
                         )}
+                        
                         {isMember && !isCreator && (
                           <Chip
                             icon={<CheckCircle fontSize="small" />}
@@ -423,13 +422,11 @@ const Groups = () => {
                             sx={{ 
                               backgroundColor: 'success.main',
                               color: 'white',
-                              fontWeight: 500,
                               '& .MuiChip-icon': { color: 'white' }
                             }}
                           />
                         )}
                         
-                        {/* Тип группы */}
                         <Chip
                           icon={typeInfo.icon}
                           label={typeInfo.text}
@@ -437,7 +434,6 @@ const Groups = () => {
                           sx={{ 
                             backgroundColor: typeInfo.color,
                             color: 'white',
-                            fontWeight: 500,
                             '& .MuiChip-icon': { color: 'white' }
                           }}
                         />
@@ -447,7 +443,7 @@ const Groups = () => {
                         {group.description || 'Нет описания'}
                       </Typography>
                       
-                      <Box sx={{ display: 'flex', gap: 3, mb: 2, flexWrap: 'wrap' }}>
+                      <Box sx={{ display: 'flex', gap: 3, mb: 2 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                           <AccountCircle fontSize="small" color="action" />
                           <Typography variant="caption">
@@ -472,28 +468,13 @@ const Groups = () => {
                   
                   <Button
                     fullWidth
-                    variant={isMember ? "outlined" : "contained"}
+                    variant={isMember || isCreator ? "outlined" : "contained"}
                     onClick={() => handleJoinClick(group)}
-                    disabled={joiningGroups[group.id]}
-                    sx={{ 
-                      borderRadius: '8px', 
-                      textTransform: 'none',
-                      ...(isMember && {
-                        backgroundColor: '#e8f5e9',
-                        color: '#2e7d32',
-                        borderColor: '#2e7d32',
-                        '&:hover': {
-                          backgroundColor: '#c8e6c9'
-                        }
-                      })
-                    }}
-                    startIcon={isMember ? <CheckCircle /> : undefined}
+                    sx={{ borderRadius: '8px', textTransform: 'none' }}
                   >
-                    {joiningGroups[group.id] ? (
-                      <CircularProgress size={20} />
-                    ) : isCreator ? 'Моя группа' : 
-                       isMember ? 'Перейти в группу' :
-                       (group.is_public ? 'Вступить' : 'Ввести пароль')}
+                    {isCreator ? 'Моя группа' : 
+                     isMember ? 'Перейти в группу' :
+                     (group.is_public ? 'Вступить' : 'Ввести пароль')}
                   </Button>
                 </Card>
               </Grid>
@@ -664,14 +645,10 @@ const Groups = () => {
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => {
-            setShowPasswordDialog(null);
-            setPassword('');
-          }}>Отмена</Button>
+          <Button onClick={() => setShowPasswordDialog(null)}>Отмена</Button>
           <Button 
             onClick={handlePasswordSubmit} 
             variant="contained"
-            disabled={!password.trim()}
           >
             Вступить
           </Button>

@@ -159,26 +159,94 @@ def get_tests(
 @app.get("/tests/{test_id}", response_model=schemas.TestResponse)
 def get_test(
     test_id: int,
+    assignment_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
+    print(f"🎯 GET /tests/{test_id} - пользователь: {current_user.id}, assignment: {assignment_id}")
+    
     test = crud.get_test(db, test_id=test_id)
     if test is None:
         raise HTTPException(status_code=404, detail="Тест не найден")
     
-    # Проверяем доступ пользователя к тесту
+    # Если передан assignment_id, проверяем доступ
+    if assignment_id:
+        print(f"✅ Проверяем доступ через assignment_id: {assignment_id}")
+        
+        assignment = db.query(models.TestAssignment).filter(
+            models.TestAssignment.id == assignment_id,
+            models.TestAssignment.test_id == test_id,
+            models.TestAssignment.is_active == True
+        ).first()
+        
+        if assignment:
+            # Проверяем членство в группе
+            group_member = db.query(models.GroupMember).filter(
+                models.GroupMember.group_id == assignment.group_id,
+                models.GroupMember.user_id == current_user.id,
+                models.GroupMember.is_active == True
+            ).first()
+            
+            if group_member:
+                print(f"✅ Доступ разрешен через группу {assignment.group_id}")
+                
+                # Загружаем данные
+                for test_question in test.questions:
+                    if test_question.question:
+                        test_question.question.answer_type = db.query(models.AnswerType).filter(
+                            models.AnswerType.id == test_question.question.answer_type_id
+                        ).first()
+                        test_question.question.type = db.query(models.QuestionType).filter(
+                            models.QuestionType.id == test_question.question.type_id
+                        ).first()
+                
+                return test
+    
+    # ДОПОЛНИТЕЛЬНО: Ищем назначения теста в группах пользователя
+    print(f"🔍 Ищем назначения теста {test_id} в группах пользователя {current_user.id}")
+    
+    # Находим все группы пользователя
+    user_groups = db.query(models.GroupMember.group_id).filter(
+        models.GroupMember.user_id == current_user.id,
+        models.GroupMember.is_active == True
+    ).all()
+    
+    group_ids = [g.group_id for g in user_groups]
+    
+    if group_ids:
+        # Ищем назначения теста в этих группах
+        assignments = db.query(models.TestAssignment).filter(
+            models.TestAssignment.test_id == test_id,
+            models.TestAssignment.group_id.in_(group_ids),
+            models.TestAssignment.is_active == True
+        ).all()
+        
+        if assignments:
+            print(f"✅ Найдено {len(assignments)} назначений в группах пользователя")
+            
+            # Загружаем данные
+            for test_question in test.questions:
+                if test_question.question:
+                    test_question.question.answer_type = db.query(models.AnswerType).filter(
+                        models.AnswerType.id == test_question.question.answer_type_id
+                    ).first()
+                    test_question.question.type = db.query(models.QuestionType).filter(
+                        models.QuestionType.id == test_question.question.type_id
+                    ).first()
+            
+            return test
+    
+    # Старая проверка доступа
     user_access = crud.get_user_test_access(db, test_id, current_user.id)
     if not user_access and not test.is_public and test.author_id != current_user.id:
         raise HTTPException(status_code=403, detail="Нет доступа к этому тесту")
     
-    # Явно загружаем answer_type для каждого вопроса
+    # Загружаем данные
     for test_question in test.questions:
         if test_question.question:
-            # Загружаем answer_type
             test_question.question.answer_type = db.query(models.AnswerType).filter(
                 models.AnswerType.id == test_question.question.answer_type_id
             ).first()
-            # Загружаем type
             test_question.question.type = db.query(models.QuestionType).filter(
                 models.QuestionType.id == test_question.question.type_id
             ).first()
@@ -564,9 +632,39 @@ def get_study_groups(
             models.StudyGroup.is_active == True
         ).offset(skip).limit(limit).all()
         
-        return groups
+        result = []
+        for group in groups:
+            # Рассчитываем количество активных участников
+            members_count = db.query(models.GroupMember).filter(
+                models.GroupMember.group_id == group.id,
+                models.GroupMember.is_active == True
+            ).count()
+            
+            group_dict = {
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "subject": group.subject,
+                "academic_year": group.academic_year,
+                "max_students": group.max_students,
+                "is_public": group.is_public,
+                "password": group.password,
+                "require_approval": group.require_approval,
+                "invite_code": group.invite_code,
+                "created_by": group.created_by,
+                "is_active": group.is_active,
+                "created_at": group.created_at,
+                "members_count": members_count
+            }
+            
+            print(f"✅ Группа {group.id}: {group.name} - участников: {members_count}")
+            result.append(group_dict)
+        
+        print(f"📊 Всего групп возвращено: {len(result)}")
+        return result
         
     except Exception as e:
+        print(f"❌ Ошибка в /groups/: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/groups/join/{group_id}")
@@ -2343,10 +2441,9 @@ def get_group_statistics(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """Получить полную статистику группы"""
-    print(f"📊 Получение ПОЛНОЙ статистики для группы {group_id}")
+    """Получить полную статистику группы - ДОСТУПНО ВСЕХ УЧАСТНИКАМ"""
     
-    # Проверяем права
+    # Проверяем, что группа существует
     group = db.query(models.StudyGroup).filter(
         models.StudyGroup.id == group_id,
         models.StudyGroup.is_active == True
@@ -2355,14 +2452,24 @@ def get_group_statistics(
     if not group:
         raise HTTPException(status_code=404, detail="Группа не найдена")
     
-    # Проверяем является ли пользователь создателем или админом
+    # Проверяем, что пользователь участник группы
+    is_member = db.query(models.GroupMember).filter(
+        models.GroupMember.group_id == group_id,
+        models.GroupMember.user_id == current_user.id,
+        models.GroupMember.is_active == True
+    ).first()
+    
+    # Или создателем группы
     is_creator = group.created_by == current_user.id
+    
+    # Или администратором
     is_admin = current_user.role_id == 3
     
-    if not (is_creator or is_admin):
+    # Если не участник, не создатель и не админ - нет доступа
+    if not (is_member or is_creator or is_admin):
         raise HTTPException(
             status_code=403,
-            detail="Недостаточно прав для просмотра статистики группы"
+            detail="Вы не являетесь участником этой группы"
         )
     
     # ========== 1. ПОЛУЧАЕМ УЧАСТНИКОВ ==========
@@ -2383,7 +2490,6 @@ def get_group_statistics(
     ).order_by(models.User.last_name, models.User.first_name)
     
     members = members_query.all()
-    print(f"👥 Найдено участников: {len(members)}")
     
     # ========== 2. ПОЛУЧАЕМ НАЗНАЧЕНИЯ ТЕСТОВ ==========
     assignments_query = db.query(
@@ -2412,14 +2518,11 @@ def get_group_statistics(
     )
     
     assignments = assignments_query.all()
-    print(f"📚 Назначений тестов: {len(assignments)}")
     
     # ========== 3. СОБИРАЕМ СТАТИСТИКУ ПО УЧАСТНИКАМ ==========
     members_stats = []
     
     for member in members:
-        print(f"📊 Обработка участника: {member.username}")
-        
         user_stats = {
             "user_id": member.user_id,
             "username": member.username,
@@ -2437,7 +2540,7 @@ def get_group_statistics(
             "worst_score": 100,
             "passed_tests": 0,
             "failed_tests": 0,
-            "total_time_spent": 0,  # в секундах
+            "total_time_spent": 0,
             "average_time_per_test": 0,
             "test_scores": [],
             "activity_timeline": []
@@ -2449,7 +2552,8 @@ def get_group_statistics(
         # Для каждого назначения находим лучшую попытку пользователя
         for assignment in assignments:
             # Находим ВСЕ сессии пользователя для этого назначения
-            sessions = db.query(
+            # Важно: проверяем и по assignment_id, и по test_id
+            sessions_query = db.query(
                 models.TestSession.id,
                 models.TestSession.score,
                 models.TestSession.max_score,
@@ -2459,9 +2563,19 @@ def get_group_statistics(
                 models.TestSession.time_spent,
                 models.TestSession.attempt_number
             ).filter(
-                models.TestSession.assignment_id == assignment.assignment_id,
-                models.TestSession.user_id == member.user_id
-            ).order_by(models.TestSession.percentage.desc()).all()
+                models.TestSession.user_id == member.user_id,
+                models.TestSession.test_id == assignment.test_id
+            )
+            
+            # Если есть assignment_id, фильтруем по нему
+            if assignment.assignment_id:
+                sessions_query = sessions_query.filter(
+                    models.TestSession.assignment_id == assignment.assignment_id
+                )
+            
+            sessions = sessions_query.order_by(
+                models.TestSession.percentage.desc()
+            ).all()
             
             if sessions:
                 # Берем лучшую попытку (самый высокий процент)
@@ -2563,7 +2677,7 @@ def get_group_statistics(
     # Сортируем участников по среднему баллу (по убыванию)
     members_stats.sort(key=lambda x: x["average_score"], reverse=True)
     
-    # ========== 4. СТАТИСТИКА ПО ТЕСТАМ ==========
+    # ========== 4. СТАТИСТИКА ПО ТЕСТАМ С МЕДИАНОЙ ==========
     test_statistics = []
     
     for assignment in assignments:
@@ -2580,6 +2694,7 @@ def get_group_statistics(
             "passed_count": 0,
             "failed_count": 0,
             "average_score": 0,
+            "median_score": 0,  # ← ДОБАВЛЯЕМ МЕДИАНУ
             "max_score": 0,
             "min_score": 100,
             "scores_distribution": {
@@ -2596,16 +2711,27 @@ def get_group_statistics(
         # Собираем результаты всех участников
         for member in members:
             # Ищем лучшую сессию этого участника
-            best_session = db.query(
+            # Проверяем и по assignment_id, и по test_id
+            sessions_query = db.query(
                 models.TestSession.percentage,
                 models.TestSession.score,
                 models.TestSession.max_score,
                 models.TestSession.is_completed,
                 models.TestSession.finished_at
             ).filter(
-                models.TestSession.assignment_id == assignment.assignment_id,
-                models.TestSession.user_id == member.user_id
-            ).order_by(models.TestSession.percentage.desc()).first()
+                models.TestSession.user_id == member.user_id,
+                models.TestSession.test_id == assignment.test_id
+            )
+            
+            # Если есть assignment_id, фильтруем по нему
+            if assignment.assignment_id:
+                sessions_query = sessions_query.filter(
+                    models.TestSession.assignment_id == assignment.assignment_id
+                )
+            
+            best_session = sessions_query.order_by(
+                models.TestSession.percentage.desc()
+            ).first()
             
             participant_info = {
                 "user_id": member.user_id,
@@ -2655,9 +2781,20 @@ def get_group_statistics(
             
             test_stat["participants"].append(participant_info)
         
-        # Рассчитываем средний балл
+        # Рассчитываем средний балл и медиану
         if scores:
+            # Среднее
             test_stat["average_score"] = round(sum(scores) / len(scores), 1)
+            
+            # Медиана
+            sorted_scores = sorted(scores)
+            n = len(sorted_scores)
+            if n % 2 == 1:
+                # Нечетное количество: берем средний элемент
+                test_stat["median_score"] = sorted_scores[n // 2]
+            else:
+                # Четное количество: среднее двух центральных
+                test_stat["median_score"] = round((sorted_scores[n // 2 - 1] + sorted_scores[n // 2]) / 2, 1)
         
         test_statistics.append(test_stat)
     
@@ -2705,7 +2842,6 @@ def get_group_statistics(
             "skill_distribution": calculate_skill_distribution(members_stats)
         }
     }
-
 
 def calculate_performance_over_time(members_stats, assignments):
     """Рассчитать изменение успеваемости по времени"""

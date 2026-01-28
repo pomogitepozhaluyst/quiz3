@@ -136,16 +136,16 @@ const testsWithDetails = await Promise.all(
     }
     
     // 4. Получаем полную статистику группы
-    if (groupResponse.data.created_by === user?.id || user?.role_id === 3) {
-      try {
-        console.log('📊 Загрузка полной статистики...');
-        const statsResponse = await api.get(`/groups/${groupId}/stats`);
-        console.log('✅ Полная статистика загружена');
-        setGroupStats(statsResponse.data);
-      } catch (statsError) {
-        console.log('ℹ️ Нет прав на просмотр статистики или статистика отсутствует');
-      }
-    }
+try {
+  console.log('📊 Загрузка полной статистики...');
+  const statsResponse = await api.get(`/groups/${groupId}/stats`);
+  console.log('✅ Полная статистика загружена');
+  setGroupStats(statsResponse.data);
+} catch (statsError) {
+  console.log('ℹ️ Не удалось загрузить статистику:', statsError);
+  // Не устанавливаем ошибку, просто статистика будет null
+  setGroupStats(null);
+}
     
   } catch (err) {
     console.error('❌ Ошибка загрузки:', err);
@@ -359,14 +359,16 @@ const getDaysWord = (days) => {
     return groupStats.test_statistics.map((test, index) => {
       const testNumber = index + 1;
       
-      let value = 0;
-      if (statMode === 'average') {
-        value = test.average_score || 0;
-      } else if (statMode === 'max') {
-        value = test.max_score || 0;
-      } else if (statMode === 'min') {
-        value = test.min_score || 0;
-      }
+let value = 0;
+if (statMode === 'average') {
+  value = test.average_score || 0;
+} else if (statMode === 'median') {
+  value = test.median_score || 0;  // ← Используем медиану
+} else if (statMode === 'max') {
+  value = test.max_score || 0;
+} else if (statMode === 'min') {
+  value = test.min_score || 0;
+}
       
       return { 
         name: `Т${testNumber}`,
@@ -580,17 +582,15 @@ groupTests.forEach((test, index) => {
       </Box>
 
       {/* Вкладки */}
-      <Tabs 
-        value={activeTab} 
-        onChange={(e, v) => setActiveTab(v)} 
-        sx={{ mb: 4, borderBottom: 1, borderColor: 'divider' }}
-      >
-        <Tab icon={<People />} label="Участники" iconPosition="start" />
-        <Tab icon={<Assignment />} label="Тесты" iconPosition="start" />
-        {(isCreator || isAdmin) && (
-          <Tab icon={<TrendingUp />} label="Статистика" iconPosition="start" />
-        )}
-      </Tabs>
+<Tabs 
+  value={activeTab} 
+  onChange={(e, v) => setActiveTab(v)} 
+  sx={{ mb: 4, borderBottom: 1, borderColor: 'divider' }}
+>
+  <Tab icon={<People />} label="Участники" iconPosition="start" />
+  <Tab icon={<Assignment />} label="Тесты" iconPosition="start" />
+  <Tab icon={<TrendingUp />} label="Статистика" iconPosition="start" />
+</Tabs>
 
       {/* ВКЛАДКА 1: УЧАСТНИКИ */}
       {activeTab === 0 && (
@@ -1034,7 +1034,7 @@ groupTests.forEach((test, index) => {
 )}
 
       {/* ВКЛАДКА 3: СТАТИСТИКА */}
-      {activeTab === 2 && (isCreator || isAdmin) && (
+      {activeTab === 2  && (
         <>
           {!groupStats ? (
             <Alert severity="warning">
