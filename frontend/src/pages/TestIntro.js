@@ -250,13 +250,15 @@ const getQuestionTypeInfo = (question) => {
     totalQuestions: totalQuestions,
     timeLimit: test.time_limit || 'Не ограничено',
     questionTypes: questionTypes,
-    rules: [
-      test.max_attempts === 0 ? 'Неограниченное количество попыток' : `Максимум ${test.max_attempts} попыт${test.max_attempts === 1 ? 'ка' : test.max_attempts < 5 ? 'ки' : 'ок'}`,
-      test.time_limit ? `Время ограничено: ${test.time_limit} минут` : 'Время не ограничено',
-      'Возврат к предыдущим вопросам невозможен',
-      'Все ответы сохраняются автоматически',
-      test.passing_score ? `Проходной балл: ${test.passing_score}%` : 'Проходной балл не установлен'
-    ]
+  rules: [
+    test.max_attempts === 0 ? 'Неограниченное количество попыток' : `Максимум ${test.max_attempts} попыт${test.max_attempts === 1 ? 'ка' : test.max_attempts < 5 ? 'ки' : 'ок'}`,
+    test.time_limit ? `Время ограничено: ${test.time_limit} минут` : 'Время не ограничено',
+    test.shuffle_questions ? 'Вопросы отображаются в случайном порядке' : 'Вопросы отображаются в заданном порядке',
+    test.shuffle_answers ? 'Варианты ответов перемешаны' : 'Варианты ответов в заданном порядке',
+    'Возврат к предыдущим вопросам невозможен',
+    'Все ответы сохраняются автоматически',
+    test.passing_score ? `Проходной балл: ${test.passing_score}%` : 'Проходной балл не установлен'
+  ]
   };
 
   // Проверяем есть ли assignment_id в URL

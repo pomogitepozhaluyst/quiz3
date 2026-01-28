@@ -49,7 +49,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+from fastapi.responses import FileResponse
+from pathlib import Path
 
+@app.get("/media/{media_type}/{filename}")
+async def get_media_file(media_type: str, filename: str):
+    """Получить медиафайл с CORS заголовками"""
+    file_path = Path(f"uploads/{media_type}/{filename}")
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    
+    # Определяем content-type
+    content_type = "application/octet-stream"
+    if filename.endswith(('.jpg', '.jpeg', '.png', '.gif')):
+        content_type = f"image/{filename.split('.')[-1]}"
+    elif filename.endswith('.mp4'):
+        content_type = "video/mp4"
+    elif filename.endswith('.mp3'):
+        content_type = "audio/mpeg"
+    
+    return FileResponse(
+        file_path,
+        media_type=content_type,
+        headers={
+            "Access-Control-Allow-Origin": "http://localhost:3000",
+            "Access-Control-Allow-Credentials": "true"
+        }
+    )
 # Health check
 @app.get("/")
 def read_root():
@@ -430,28 +457,56 @@ def complete_test_session(
     if session.is_completed:
         raise HTTPException(status_code=400, detail="Тест уже завершен")
     
-    # Помечаем как завершенный
+    # Рассчитываем баллы заново
+    # 1. Находим все ответы в этой сессии
+    user_answers = db.query(models.UserAnswer).filter(
+        models.UserAnswer.session_id == session_id
+    ).all()
+    
+    # 2. Считаем набранные баллы
+    total_points_earned = sum(answer.points_earned for answer in user_answers if answer.points_earned)
+    
+    # 3. Находим максимальные возможные баллы за тест
+    test_questions = db.query(models.TestQuestion).filter(
+        models.TestQuestion.test_id == session.test_id
+    ).all()
+    
+    max_possible_points = sum(tq.points for tq in test_questions if tq.points)
+    
+    print(f"📊 Баллы: {total_points_earned}/{max_possible_points}")
+    
+    # Обновляем сессию
     session.is_completed = True
     session.finished_at = datetime.utcnow()
+    session.score = total_points_earned
+    session.max_score = max_possible_points
     
-    # Рассчитываем общее время
+    # Рассчитываем процент
+    if max_possible_points > 0:
+        percentage = (total_points_earned / max_possible_points) * 100
+        session.percentage = round(percentage, 2)
+    else:
+        session.percentage = 0
+    
+    # Рассчитываем время
     if session.started_at:
         time_spent = (session.finished_at - session.started_at).total_seconds()
         session.time_spent = int(time_spent)
     
-    # Обновляем статистику пользователя
-    update_user_statistics(db, current_user.id, session.test_id, session.score, session.max_score)
-    
     db.commit()
     db.refresh(session)
     
-    print(f"✅ Сессия {session_id} завершена, баллы: {session.score}/{session.max_score}")
+    # Обновляем статистику пользователя
+    update_user_statistics(db, current_user.id, session.test_id, session)
+    
+    print(f"✅ Сессия {session_id} завершена, баллы: {session.score}/{session.max_score} ({session.percentage}%)")
     
     return {
         "message": "Тест завершен",
         "score": session.score,
         "max_score": session.max_score,
         "percentage": session.percentage,
+        "time_spent": session.time_spent,
         "is_completed": session.is_completed
     }
 
@@ -1306,13 +1361,6 @@ def get_test_full(
                     "name": question.type.name,
                     "description": question.type.description
                 }
-            else:
-                # Если тип не загружен, используем значения по умолчанию
-                type_data = {
-                    "id": question.type_id,
-                    "name": "text",
-                    "description": "Текстовый вопрос"
-                }
             
             # Безопасно получаем данные о типе ответа
             answer_type_data = None
@@ -1322,19 +1370,13 @@ def get_test_full(
                     "name": question.answer_type.name,
                     "description": question.answer_type.description
                 }
-            else:
-                # Если тип ответа не загружен, используем значения по умолчанию
-                answer_type_data = {
-                    "id": question.answer_type_id,
-                    "name": "text",
-                    "description": "Текстовый ответ"
-                }
             
             question_data = {
                 "id": question.id,
                 "question_text": question.question_text,
                 "type": type_data,
                 "answer_type": answer_type_data,
+                "answer_type_id": question.answer_type_id,  # Важно!
                 "category_id": question.category_id,
                 "difficulty": question.difficulty,
                 "explanation": question.explanation or "",

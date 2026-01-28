@@ -61,159 +61,226 @@ const GroupDetail = () => {
 
   // ========== API ФУНКЦИИ ==========
 
-const fetchGroupData = async () => {
-  try {
-    setLoading(true);
-    setError(null);
-    
-    console.log('📥 Загрузка данных группы...');
-    
-    // 1. Получаем информацию о группе
-    const groupResponse = await api.get(`/groups/${groupId}`);
-    console.log('✅ Данные группы:', groupResponse.data);
-    setGroupData(groupResponse.data);
-    
-    // 2. Получаем участников группы
+  const fetchGroupData = async () => {
     try {
-      const membersResponse = await api.get(`/groups/${groupId}/members`);
-      console.log('✅ Участники:', membersResponse.data?.length);
-      setMembers(membersResponse.data || []);
-    } catch (membersError) {
-      console.warn('⚠️ Не удалось загрузить участников:', membersError);
-      setMembers([]);
-    }
-    
-    // 3. Получаем тесты назначенные группе - ВАЖНО: используем правильный endpoint
-    try {
- // Внутри fetchGroupData, при загрузке тестов:
-const assignmentsResponse = await api.get(`/groups/${groupId}/tests`);
-
-const testsWithDetails = await Promise.all(
-  (assignmentsResponse.data || []).map(async (test) => {
-    try {
-      // ПРАВИЛЬНЫЙ ЗАПРОС для сессий
-      const sessionsResponse = await api.get(`/test-sessions/`, {
-        params: {
-          test_id: test.id,
-          user_id: user?.id,
-          assignment_id: test.assignment_id
-        }
+      setLoading(true);
+      setError(null);
+      
+      console.log('📥 Загрузка данных группы...');
+      
+      // 1. Получаем информацию о группе
+      const groupResponse = await api.get(`/groups/${groupId}`);
+      console.log('✅ Данные группы:', groupResponse.data);
+      setGroupData(groupResponse.data);
+      
+      // 2. Получаем участников группы
+      try {
+        const membersResponse = await api.get(`/groups/${groupId}/members`);
+        console.log('✅ Участники:', membersResponse.data?.length);
+        setMembers(membersResponse.data || []);
+      } catch (membersError) {
+        console.warn('⚠️ Не удалось загрузить участников:', membersError);
+        setMembers([]);
+      }
+      
+      // 3. Получаем тесты назначенные группе
+      try {
+        const assignmentsResponse = await api.get(`/groups/${groupId}/tests`);
+        console.log('✅ Назначения тестов:', assignmentsResponse.data);
+        
+        const testsWithDetails = await Promise.all(
+          (assignmentsResponse.data || []).map(async (assignment) => {
+            try {
+              // Получаем полную информацию о тесте из таблицы tests
+              let testFullInfo = null;
+              try {
+                const testResponse = await api.get(`/tests/${assignment.id}`);
+                testFullInfo = testResponse.data;
+                console.log(`✅ Полная информация о тесте ${assignment.id}:`, {
+                  title: testFullInfo.title,
+                  max_attempts: testFullInfo.max_attempts,
+                  time_limit: testFullInfo.time_limit
+                });
+              } catch (testError) {
+                console.warn(`⚠️ Не удалось загрузить детали теста ${assignment.id}:`, testError);
+                testFullInfo = assignment;
+              }
+              
+              // КРИТИЧНО: max_attempts берется из таблицы tests!
+              const maxAttempts = testFullInfo.max_attempts || 1;
+              
+              console.log(`📊 Тест "${assignment.title}" (ID: ${assignment.id}):`, {
+                assignment_id: assignment.assignment_id,
+                max_attempts_from_test_table: maxAttempts,
+                title: assignment.title
+              });
+              
+              // Получаем все сессии для этого теста (без фильтра по assignment_id)
+              const sessionsResponse = await api.get(`/test-sessions/`, {
+                params: {
+                  test_id: assignment.id, // Ищем сессии по test_id
+                  user_id: user?.id
+                }
+              });
+              
+              const sessions = sessionsResponse.data || [];
+              console.log(`📊 Все сессии теста ${assignment.id}:`, sessions);
+              
+              // Считаем завершенные попытки
+              const completedSessions = sessions.filter(s => s.is_completed);
+              const completedCount = completedSessions.length;
+              
+              // Проверяем есть ли незавершенная сессия
+              const unfinishedSession = sessions.find(s => !s.is_completed);
+              const hasUnfinished = !!unfinishedSession;
+              
+              // Общее количество использованных попыток
+              const totalAttemptsUsed = hasUnfinished ? completedCount + 1 : completedCount;
+              
+              // Проверяем лимит из таблицы tests
+              const hasAttemptsLeft = maxAttempts === 0 || totalAttemptsUsed < maxAttempts;
+              
+              // Берем последнюю сессию (завершенную или незавершенную)
+              const latestSession = sessions.length > 0 
+                ? sessions.sort((a, b) => new Date(b.started_at) - new Date(a.started_at))[0]
+                : null;
+              
+              return {
+                ...assignment,
+                // Добавляем информацию из таблицы tests
+                max_attempts: maxAttempts, // Это теперь из таблицы tests!
+                sessions: sessions,
+                latest_session: latestSession,
+                // ИСПРАВЛЕНО: используем правильный подсчет
+                attempts_used: totalAttemptsUsed,
+                has_unfinished_attempt: hasUnfinished,
+                is_completed: latestSession?.is_completed || false,
+                is_passed: latestSession?.is_completed && 
+                         latestSession.percentage >= (assignment.passing_score || 0)
+              };
+              
+            } catch (error) {
+              console.warn(`⚠️ Ошибка обработки теста ${assignment.id}:`, error);
+              return {
+                ...assignment,
+                max_attempts: 1,
+                sessions: [],
+                latest_session: null,
+                attempts_used: 0,
+                has_unfinished_attempt: false,
+                is_completed: false,
+                is_passed: false
+              };
+            }
+          })
+        );
+        
+        console.log('📋 Все тесты с деталями:', testsWithDetails);
+        setGroupTests(testsWithDetails);
+        
+      } catch (testsError) {
+        console.warn('⚠️ Не удалось загрузить тесты:', testsError);
+        setGroupTests([]);
+      }
+      
+      // 4. Получаем полную статистику группы
+      try {
+        console.log('📊 Загрузка полной статистики...');
+        const statsResponse = await api.get(`/groups/${groupId}/stats`);
+        console.log('✅ Полная статистика загружена');
+        setGroupStats(statsResponse.data);
+      } catch (statsError) {
+        console.log('ℹ️ Не удалось загрузить статистику:', statsError);
+        setGroupStats(null);
+      }
+      
+    } catch (err) {
+      console.error('❌ Ошибка загрузки:', err);
+      const errorMsg = err.response?.data?.detail || err.message || 'Ошибка загрузки данных группы';
+      setError(errorMsg);
+      setSnackbar({
+        open: true,
+        message: errorMsg,
+        severity: 'error'
       });
-      
-      console.log(`📊 Сессии для теста ${test.id}:`, sessionsResponse.data);
-      
-      const sessions = sessionsResponse.data || [];
-      const latestSession = sessions.length > 0 ? sessions[0] : null;
-      
-      return {
-        ...test,
-        sessions: sessions,
-        latest_session: latestSession,
-        attempts_used: sessions.length,
-        is_completed: latestSession?.is_completed || false,
-        is_passed: latestSession?.is_completed && 
-                   latestSession.percentage >= (test.passing_score || 0)
-      };
-    } catch (error) {
-      console.warn(`⚠️ Не удалось загрузить сессии:`, error);
-      return {
-        ...test,
-        sessions: [],
-        latest_session: null,
-        attempts_used: 0,
-        is_completed: false,
-        is_passed: false
-      };
+    } finally {
+      setLoading(false);
     }
-  })
-);
-      
-      setGroupTests(testsWithDetails);
-      
-    } catch (testsError) {
-      console.warn('⚠️ Не удалось загрузить тесты:', testsError);
-      setGroupTests([]);
-    }
-    
-    // 4. Получаем полную статистику группы
-try {
-  console.log('📊 Загрузка полной статистики...');
-  const statsResponse = await api.get(`/groups/${groupId}/stats`);
-  console.log('✅ Полная статистика загружена');
-  setGroupStats(statsResponse.data);
-} catch (statsError) {
-  console.log('ℹ️ Не удалось загрузить статистику:', statsError);
-  // Не устанавливаем ошибку, просто статистика будет null
-  setGroupStats(null);
-}
-    
-  } catch (err) {
-    console.error('❌ Ошибка загрузки:', err);
-    const errorMsg = err.response?.data?.detail || err.message || 'Ошибка загрузки данных группы';
-    setError(errorMsg);
-    setSnackbar({
-      open: true,
-      message: errorMsg,
-      severity: 'error'
-    });
-  } finally {
-    setLoading(false);
-  }
-};
-
+  };
 
   // ========== ОБРАБОТЧИКИ ==========
 
-const handleStartTest = async (testId, assignmentId) => {
-  try {
-    console.log('🎯 [handleStartTest] Начинаем тест:', { 
-      testId, 
-      assignmentId,
-      type_testId: typeof testId,
-      type_assignmentId: typeof assignmentId 
-    });
-    
-    if (!assignmentId) {
-      console.error('❌ CRITICAL: assignmentId не передан!');
+  const handleStartTest = async (testId, assignmentId) => {
+    try {
+      console.log('🎯 [handleStartTest] Начинаем тест:', { 
+        testId, 
+        assignmentId,
+        type_testId: typeof testId,
+        type_assignmentId: typeof assignmentId 
+      });
+      
+      if (!assignmentId) {
+        console.error('❌ CRITICAL: assignmentId не передан!');
+        setSnackbar({
+          open: true,
+          message: 'Ошибка: не найден идентификатор назначения теста',
+          severity: 'error'
+        });
+        return;
+      }
+      
+      if (!testId) {
+        console.error('❌ CRITICAL: testId не передан!');
+        return;
+      }
+      
+      console.log('🔄 Переходим на страницу теста...');
+      
+      // Проверяем есть ли незавершенная сессия
+      const test = groupTests.find(t => 
+        t.id === testId && t.assignment_id === assignmentId
+      );
+      
+      if (test?.has_unfinished_attempt && test.sessions?.length > 0) {
+        // Находим незавершенную сессию
+        const unfinishedSession = test.sessions.find(s => !s.is_completed);
+        if (unfinishedSession) {
+          console.log('🔄 Продолжаем незавершенную сессию:', unfinishedSession.id);
+          navigate(`/test/${testId}/intro?assignment=${assignmentId}&session=${unfinishedSession.id}`, {
+            state: {
+              testId: Number(testId),
+              assignmentId: Number(assignmentId),
+              sessionId: unfinishedSession.id,
+              groupId: Number(groupId)
+            },
+            replace: true
+          });
+          return;
+        }
+      }
+      
+      // Создаем новую сессию
+      navigate(`/test/${testId}/intro?assignment=${assignmentId}`, {
+        state: {
+          testId: Number(testId),
+          assignmentId: Number(assignmentId),
+          groupId: Number(groupId)
+        },
+        replace: true
+      });
+      
+    } catch (err) {
+      console.error('❌ Ошибка в handleStartTest:', err);
+      const errorMsg = err.response?.data?.detail || 'Ошибка начала теста';
       setSnackbar({
         open: true,
-        message: 'Ошибка: не найден идентификатор назначения теста',
+        message: errorMsg,
         severity: 'error'
       });
-      return;
     }
-    
-    if (!testId) {
-      console.error('❌ CRITICAL: testId не передан!');
-      return;
-    }
-    
-    console.log('🔄 Переходим на страницу теста...');
-    console.log('📝 URL:', `/test/${testId}/intro?assignment=${assignmentId}`);
-    
-    // ВАЖНО: используем replace вместо push, чтобы избежать дублирования
-    navigate(`/test/${testId}/intro?assignment=${assignmentId}`, {
-      state: {
-        testId: Number(testId),
-        assignmentId: Number(assignmentId),
-        groupId: Number(groupId)
-      },
-      replace: true  // ← Это важно!
-    });
-    
-  } catch (err) {
-    console.error('❌ Ошибка в handleStartTest:', err);
-    const errorMsg = err.response?.data?.detail || 'Ошибка начала теста';
-    setSnackbar({
-      open: true,
-      message: errorMsg,
-      severity: 'error'
-    });
-  }
-};
+  };
 
   const handleViewResults = (testId, assignmentId) => {
-    // Временное решение - показываем снекбар
     setSnackbar({
       open: true,
       message: 'Функция просмотра результатов теста будет доступна в следующем обновлении',
@@ -275,45 +342,15 @@ const handleStartTest = async (testId, assignmentId) => {
 
   // ========== УТИЛИТЫ ==========
 
-// Добавьте более информативное форматирование даты
-const formatDate = (dateString) => {
-  if (!dateString) return '—';
-  try {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    
-    // Если сегодня
-    if (date.toDateString() === now.toDateString()) {
-      return `Сегодня в ${format(date, 'HH:mm', { locale: ru })}`;
+  const formatDate = (dateString) => {
+    if (!dateString) return '—';
+    try {
+      const date = new Date(dateString);
+      return format(date, 'dd.MM.yyyy HH:mm', { locale: ru });
+    } catch {
+      return '—';
     }
-    
-    // Если вчера
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (date.toDateString() === yesterday.toDateString()) {
-      return `Вчера в ${format(date, 'HH:mm', { locale: ru })}`;
-    }
-    
-    // Если менее недели назад
-    if (diffHours < 24 * 7) {
-      const days = Math.floor(diffHours / 24);
-      return `${days} ${getDaysWord(days)} назад`;
-    }
-    
-    // Стандартное форматирование
-    return format(date, 'dd.MM.yyyy HH:mm', { locale: ru });
-  } catch {
-    return '—';
-  }
-};
-
-const getDaysWord = (days) => {
-  if (days === 1) return 'день';
-  if (days >= 2 && days <= 4) return 'дня';
-  return 'дней';
-};
+  };
 
   const getScoreColor = (score) => {
     if (score >= 90) return '#2e7d32';
@@ -359,16 +396,16 @@ const getDaysWord = (days) => {
     return groupStats.test_statistics.map((test, index) => {
       const testNumber = index + 1;
       
-let value = 0;
-if (statMode === 'average') {
-  value = test.average_score || 0;
-} else if (statMode === 'median') {
-  value = test.median_score || 0;  // ← Используем медиану
-} else if (statMode === 'max') {
-  value = test.max_score || 0;
-} else if (statMode === 'min') {
-  value = test.min_score || 0;
-}
+      let value = 0;
+      if (statMode === 'average') {
+        value = test.average_score || 0;
+      } else if (statMode === 'median') {
+        value = test.median_score || 0;
+      } else if (statMode === 'max') {
+        value = test.max_score || 0;
+      } else if (statMode === 'min') {
+        value = test.min_score || 0;
+      }
       
       return { 
         name: `Т${testNumber}`,
@@ -396,33 +433,6 @@ if (statMode === 'average') {
     member.last_name?.toLowerCase().includes(memberSearch.toLowerCase())
   );
 
-  // В GroupDetail.js, сразу после получения данных
-console.log('=== ВСЕ ТЕСТЫ ГРУППЫ ===');
-groupTests.forEach((test, index) => {
-  console.log(`\n📋 ТЕСТ ${index + 1}: ${test.title} (ID: ${test.id})`);
-  console.log('📊 Данные теста:', {
-    // Основные поля
-    'id': test.id,
-    'title': test.title,
-    'assignment_id': test.assignment_id,
-    'author_id': test.author_id,
-    
-    // Критические поля для отображения
-    'attempts_used': test.attempts_used,
-    'max_attempts': test.max_attempts,
-    'is_completed': test.is_completed,
-    'is_passed': test.is_passed,
-    
-    // Сессии
-    'has_latest_session': !!test.latest_session,
-    'latest_session_type': typeof test.latest_session,
-    'latest_session_data': test.latest_session,
-    
-    // Для отладки
-    'has_sessions_array': Array.isArray(test.sessions),
-    'sessions_count': test.sessions?.length || 0
-  });
-});
   // ========== МОДАЛЬНЫЕ ОКНА ==========
 
   const TestDetailsModal = ({ test, open, onClose }) => {
@@ -459,6 +469,14 @@ groupTests.forEach((test, index) => {
                   <Typography variant="body2">
                     • Проходной балл: {test.passing_score || 'Не задан'}
                   </Typography>
+                  <Typography variant="body2">
+                    • Использовано попыток: {test.attempts_used || 0}
+                  </Typography>
+                  {test.has_unfinished_attempt && (
+                    <Typography variant="body2" color="warning.main">
+                      • Есть незавершенная попытка
+                    </Typography>
+                  )}
                 </Box>
               </Grid>
               
@@ -582,15 +600,15 @@ groupTests.forEach((test, index) => {
       </Box>
 
       {/* Вкладки */}
-<Tabs 
-  value={activeTab} 
-  onChange={(e, v) => setActiveTab(v)} 
-  sx={{ mb: 4, borderBottom: 1, borderColor: 'divider' }}
->
-  <Tab icon={<People />} label="Участники" iconPosition="start" />
-  <Tab icon={<Assignment />} label="Тесты" iconPosition="start" />
-  <Tab icon={<TrendingUp />} label="Статистика" iconPosition="start" />
-</Tabs>
+      <Tabs 
+        value={activeTab} 
+        onChange={(e, v) => setActiveTab(v)} 
+        sx={{ mb: 4, borderBottom: 1, borderColor: 'divider' }}
+      >
+        <Tab icon={<People />} label="Участники" iconPosition="start" />
+        <Tab icon={<Assignment />} label="Тесты" iconPosition="start" />
+        <Tab icon={<TrendingUp />} label="Статистика" iconPosition="start" />
+      </Tabs>
 
       {/* ВКЛАДКА 1: УЧАСТНИКИ */}
       {activeTab === 0 && (
@@ -713,328 +731,348 @@ groupTests.forEach((test, index) => {
       )}
 
       {/* ВКЛАДКА 2: ТЕСТЫ */}
-{activeTab === 1 && (
-  <Box>
-    <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
-      <TextField 
-        placeholder="Найти тест..." 
-        size="small" 
-        value={testSearch}
-        onChange={(e) => setTestSearch(e.target.value)}
-        sx={{ flexGrow: 1 }} 
-        InputProps={{ 
-          startAdornment: (
-            <InputAdornment position="start">
-              <Search/>
-            </InputAdornment>
-          ) 
-        }} 
-      />
-      {(isCreator || isAdmin) && (
-        <Button 
-          variant="contained" 
-          startIcon={<Add />}
-          onClick={handleAssignTest}
-          sx={{ borderRadius: 1 }}
-        >
-          Назначить тест
-        </Button>
-      )}
-    </Box>
-    
-    {filteredTests.length === 0 ? (
-      <Alert severity="info">
-        Тесты не найдены
-      </Alert>
-    ) : (
-      <Grid container spacing={2}>
-        {filteredTests.map((test) => {
-          // ВАЖНО: Используем реальные данные о сессиях
-          const attemptsUsed = test.attempts_used || 0;
-          const maxAttempts = test.max_attempts || 1;
-          const attemptsLeft = maxAttempts === 0 ? Infinity : maxAttempts - attemptsUsed;
-          const hasAttemptsLeft = maxAttempts === 0 || attemptsLeft > 0;
-          
-          const currentDate = new Date();
-          const startDate = test.start_date ? new Date(test.start_date) : null;
-          const endDate = test.end_date ? new Date(test.end_date) : null;
-          
-          const isStarted = !startDate || currentDate >= startDate;
-          const isNotEnded = !endDate || currentDate <= endDate;
-          const isTestActive = isStarted && isNotEnded;
-          
-          const canTakeTest = hasAttemptsLeft && isTestActive;
-          
-          // Берем данные из latest_session
-          const latestSession = test.latest_session;
-          const isCompleted = latestSession?.is_completed;
-          const percentage = latestSession?.percentage || 0;
-          const score = latestSession?.score || 0;
-          const maxScore = latestSession?.max_score || 0;
-          const isPassed = isCompleted && percentage >= (test.passing_score || 0);
-          
-          // Отладочная информация
-          console.log('📊 Тест:', {
-            id: test.id,
-            title: test.title,
-            attemptsUsed,
-            maxAttempts,
-            hasAttemptsLeft,
-            isTestActive,
-            isCompleted,
-            percentage,
-            score,
-            maxScore,
-            isPassed,
-            latestSession: latestSession
-          });
-
-          return (
-            <Grid item xs={12} key={`${test.id}-${test.assignment_id || 'no-assignment'}`}>
-              <Card 
-                elevation={2}
-                sx={{ 
-                  p: 2,
-                  transition: 'all 0.2s',
-                  '&:hover': {
-                    boxShadow: 6,
-                    transform: 'translateY(-2px)'
-                  }
-                }}
+      {activeTab === 1 && (
+        <Box>
+          <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+            <TextField 
+              placeholder="Найти тест..." 
+              size="small" 
+              value={testSearch}
+              onChange={(e) => setTestSearch(e.target.value)}
+              sx={{ flexGrow: 1 }} 
+              InputProps={{ 
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <Search/>
+                  </InputAdornment>
+                ) 
+              }} 
+            />
+            {(isCreator || isAdmin) && (
+              <Button 
+                variant="contained" 
+                startIcon={<Add />}
+                onClick={handleAssignTest}
+                sx={{ borderRadius: 1 }}
               >
-                <Grid container spacing={2}>
-                  {/* Левая часть: Информация о тесте */}
-                  <Grid item xs={12} md={8}>
-                    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, mb: 2 }}>
-                      {isCompleted ? (
-                        <CheckCircleOutline sx={{ 
-                          fontSize: 32,
-                          color: isPassed ? '#2e7d32' : '#d32f2f',
-                          mt: 0.5
-                        }} />
-                      ) : (
-                        <Assignment sx={{ 
-                          fontSize: 32,
-                          color: isTestActive ? 'primary.main' : 'disabled',
-                          mt: 0.5
-                        }} />
-                      )}
-                      <Box sx={{ flex: 1 }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 0.5 }}>
-                          <Typography variant="h6" fontWeight="bold">
-                            {test.title}
-                          </Typography>
-                          {isCompleted && (
-                            <Chip 
-                              label={isPassed ? "Пройден" : "Не пройден"} 
-                              size="small" 
-                              sx={{ 
-                                backgroundColor: isPassed ? '#2e7d32' : '#d32f2f',
-                                color: 'white',
-                                fontWeight: 500
-                              }}
-                            />
-                          )}
-                          {!isTestActive && (
-                            <Chip 
-                              label={!isStarted ? "Еще не начался" : "Завершен"} 
-                              size="small" 
-                              variant="outlined"
-                            />
-                          )}
-                          {!hasAttemptsLeft && maxAttempts !== 0 && (
-                            <Chip 
-                              label="Попытки исчерпаны" 
-                              size="small" 
-                              color="error"
-                              variant="outlined"
-                            />
-                          )}
-                        </Box>
-                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                          {test.description || 'Описание отсутствует'}
-                        </Typography>
-                      </Box>
-                    </Box>
+                Назначить тест
+              </Button>
+            )}
+          </Box>
+          
+          {filteredTests.length === 0 ? (
+            <Alert severity="info">
+              Тесты не найдены
+            </Alert>
+          ) : (
+            <Grid container spacing={2}>
 
-                    {/* Прогресс и информация */}
-                    <Grid container spacing={2}>
-                      <Grid item xs={12} sm={6}>
-                        <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>
-                          Попытки: {attemptsUsed}/{maxAttempts === 0 ? '∞' : maxAttempts}
-                          {hasAttemptsLeft && maxAttempts !== 0 ? (
-                            <Typography component="span" variant="caption" sx={{ color: '#2e7d32', fontWeight: 500, ml: 1 }}>
-                              (осталось: {attemptsLeft})
-                            </Typography>
-                          ) : maxAttempts !== 0 ? (
-                            <Typography component="span" variant="caption" sx={{ color: '#d32f2f', fontWeight: 500, ml: 1 }}>
-                              (лимит исчерпан)
-                            </Typography>
-                          ) : null}
-                        </Typography>
-                        
-                        {maxAttempts !== 0 && (
-                          <LinearProgress 
-                            variant="determinate" 
-                            value={(attemptsUsed / maxAttempts) * 100} 
-                            sx={{ 
-                              height: 6,
-                              borderRadius: 3,
-                              backgroundColor: 'action.disabledBackground',
-                              '& .MuiLinearProgress-bar': {
-                                backgroundColor: attemptsUsed === maxAttempts ? '#d32f2f' : '#ed6c02'
-                              }
-                            }}
-                          />
-                        )}
-                      </Grid>
-                      
-                      <Grid item xs={12} sm={6}>
-                        <Typography variant="caption" color="text.secondary" display="block">
-                          {startDate && `Начало: ${formatDate(startDate)} • `}
-                          Срок сдачи: {formatDate(endDate) || 'Не ограничен'}
-                        </Typography>
-                        {latestSession?.finished_at && (
-                          <Typography variant="caption" sx={{ 
-                            color: latestSession.is_completed ? '#2e7d32' : '#d32f2f',
-                            display: 'block'
-                          }}>
-                            • {latestSession.is_completed ? 'Сдан' : 'Начат'}: {formatDate(latestSession.finished_at)}
-                          </Typography>
-                        )}
-                      </Grid>
-                    </Grid>
-                  </Grid>
-
-                  {/* Правая часть: Баллы и кнопки */}
-                  <Grid item xs={12} md={4}>
-                    <Box sx={{ 
-                      display: 'flex', 
-                      flexDirection: 'column', 
-                      alignItems: 'flex-end',
-                      height: '100%',
-                      justifyContent: 'space-between'
-                    }}>
-                      {isCompleted ? (
-                        <Box sx={{ textAlign: 'right', mb: 2 }}>
-                          <Typography variant="h3" fontWeight="bold" sx={{ 
-                            color: getScoreColor(percentage),
-                            lineHeight: 1,
-                            mb: 0.5
-                          }}>
-                            {score}/{maxScore}
-                          </Typography>
-                          <Typography variant="h5" sx={{ 
-                            color: getScoreColor(percentage),
-                            opacity: 0.8,
-                            fontWeight: 600
-                          }}>
-                            ({percentage}%)
-                          </Typography>
-                        </Box>
-                      ) : (
-                        <Box sx={{ textAlign: 'right', mb: 2 }}>
-                          <Typography variant="body1" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                            Проходной: {test.passing_score || 'Не задан'}
-                          </Typography>
-                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                            Лимит: {test.time_limit || 'Не ограничен'} мин.
-                          </Typography>
-                          
-                          {attemptsUsed > 0 && !isCompleted && (
-                            <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 1 }}>
-                              • Начат {attemptsUsed} раз
-                            </Typography>
-                          )}
-                        </Box>
-                      )}
-
-                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          startIcon={<Info />}
-                          onClick={() => {
-                            setSelectedTest(test);
-                            setTestModalOpen(true);
-                          }}
-                          sx={{
-                            borderRadius: 1,
-                            textTransform: 'none',
-                            fontWeight: 600
-                          }}
-                        >
-                          Подробнее
-                        </Button>
-                        
-                        {canTakeTest && !isCompleted && (
-                          <Button
-                            variant="contained"
-                            size="small"
-                            startIcon={attemptsUsed > 0 ? <Replay /> : <PlayCircleOutline />}
-                            onClick={() => handleStartTest(test.id, test.assignment_id)}
-                            sx={{
-                              borderRadius: 1,
-                              textTransform: 'none',
-                              fontWeight: 600,
-                              backgroundColor: attemptsUsed > 0 ? '#ed6c02' : '#1976d2',
-                              '&:hover': {
-                                backgroundColor: attemptsUsed > 0 ? '#e65100' : '#1565c0'
-                              }
-                            }}
-                          >
-                            {attemptsUsed > 0 ? 'Продолжить' : 'Пройти'}
-                          </Button>
-                        )}
-                        
-                        {isCompleted && (
-                          <Button
-                            variant="outlined"
-                            size="small"
-                            startIcon={<Visibility />}
-                            onClick={() => {
-                              // Показываем детали сессии
-                              setSnackbar({
-                                open: true,
-                                message: 'Просмотр результатов доступен в статистике группы',
-                                severity: 'info'
-                              });
-                            }}
-                            sx={{
-                              borderRadius: 1,
-                              textTransform: 'none',
-                              fontWeight: 600
-                            }}
-                          >
-                            Результаты
-                          </Button>
-                        )}
-                        
-                        {(isCreator || isAdmin) && (
-                          <IconButton
-                            size="small"
-                            color="error"
-                            onClick={() => handleDeleteAssignment(test.assignment_id, test.title)}
-                            title="Удалить назначение"
-                          >
-                            <Delete />
-                          </IconButton>
-                        )}
-                      </Box>
-                    </Box>
-                  </Grid>
-                </Grid>
-              </Card>
+{filteredTests.map((test) => {
+  // Используем max_attempts из таблицы tests
+  const maxAttempts = test.max_attempts || 1;
+  const attemptsUsed = test.attempts_used || 0;
+  const hasUnfinishedAttempt = test.has_unfinished_attempt;
+  
+  // Рассчитываем оставшиеся попытки
+  let attemptsLeft = 0;
+  if (maxAttempts === 0) {
+    attemptsLeft = Infinity; // Неограниченно
+  } else {
+    attemptsLeft = Math.max(0, maxAttempts - attemptsUsed);
+  }
+  
+  const hasAttemptsLeft = maxAttempts === 0 || attemptsLeft > 0;
+  
+  // Проверяем даты
+  const currentDate = new Date();
+  const startDate = test.start_date ? new Date(test.start_date) : null;
+  const endDate = test.end_date ? new Date(test.end_date) : null;
+  const isStarted = !startDate || currentDate >= startDate;
+  const isNotEnded = !endDate || currentDate <= endDate;
+  const isTestActive = isStarted && isNotEnded;
+  
+  // Может ли пользователь пройти тест?
+  // ИСПРАВЛЕНО: Убираем проверку !test.is_completed, так как можно пересдавать
+  const canTakeTest = hasAttemptsLeft && isTestActive;
+  
+  // Данные из последней сессии
+  const latestSession = test.latest_session;
+  const isCompleted = test.is_completed;
+  const percentage = latestSession?.percentage || 0;
+  const score = latestSession?.score || 0;
+  const maxScore = latestSession?.max_score || 0;
+  const isPassed = test.is_passed;
+  
+  // Отладочная информация
+  console.log(`🎯 Тест "${test.title}":`, {
+    max_attempts: maxAttempts,
+    attempts_used: attemptsUsed,
+    attempts_left: attemptsLeft,
+    has_attempts_left: hasAttemptsLeft,
+    is_test_active: isTestActive,
+    can_take_test: canTakeTest,
+    is_completed: isCompleted,
+    has_unfinished: hasUnfinishedAttempt
+  });
+  
+  // Текст для отображения попыток
+  let attemptsText = '';
+  let attemptsColor = 'text.secondary';
+  
+  if (maxAttempts === 0) {
+    attemptsText = `Попытки: ${attemptsUsed}/∞`;
+    attemptsColor = 'text.secondary';
+  } else if (hasUnfinishedAttempt) {
+    attemptsText = `Попытки: ${attemptsUsed}/${maxAttempts} (есть незавершенная)`;
+    attemptsColor = 'warning.main';
+  } else if (attemptsUsed >= maxAttempts) {
+    attemptsText = `Попытки: ${attemptsUsed}/${maxAttempts} (лимит исчерпан)`;
+    attemptsColor = 'error.main';
+  } else {
+    attemptsText = `Попытки: ${attemptsUsed}/${maxAttempts}`;
+    attemptsColor = attemptsUsed > 0 ? 'success.main' : 'text.secondary';
+  }
+  
+  return (
+    <Grid item xs={12} key={`${test.id}-${test.assignment_id}`}>
+      <Card elevation={2} sx={{ p: 2 }}>
+        <Grid container spacing={2}>
+          {/* Левая часть: Информация о тесте */}
+          <Grid item xs={12} md={8}>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, mb: 2 }}>
+              {isCompleted ? (
+                <CheckCircleOutline sx={{ 
+                  fontSize: 32,
+                  color: isPassed ? '#2e7d32' : '#d32f2f',
+                  mt: 0.5
+                }} />
+              ) : (
+                <Assignment sx={{ 
+                  fontSize: 32,
+                  color: isTestActive ? 'primary.main' : 'disabled',
+                  mt: 0.5
+                }} />
+              )}
+              <Box sx={{ flex: 1 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 0.5 }}>
+                  <Typography variant="h6" fontWeight="bold">
+                    {test.title}
+                  </Typography>
+                  {isCompleted && (
+                    <Chip 
+                      label={isPassed ? "Пройден" : "Не пройден"} 
+                      size="small" 
+                      sx={{ 
+                        backgroundColor: isPassed ? '#2e7d32' : '#d32f2f',
+                        color: 'white',
+                        fontWeight: 500
+                      }}
+                    />
+                  )}
+                  {!isTestActive && (
+                    <Chip 
+                      label={!isStarted ? "Еще не начался" : "Завершен"} 
+                      size="small" 
+                      variant="outlined"
+                    />
+                  )}
+                  {!hasAttemptsLeft && maxAttempts !== 0 && (
+                    <Chip 
+                      label="Попытки исчерпаны" 
+                      size="small" 
+                      color="error"
+                      variant="outlined"
+                    />
+                  )}
+                </Box>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  {test.description || 'Описание отсутствует'}
+                </Typography>
+                
+                {/* Отображение попыток */}
+                <Box sx={{ mb: 2 }}>
+                  <Typography 
+                    variant="body2" 
+                    color={attemptsColor} 
+                    fontWeight="bold"
+                    gutterBottom
+                  >
+                    {attemptsText}
+                    {hasAttemptsLeft && maxAttempts !== 0 && attemptsLeft > 0 && (
+                      <Typography component="span" variant="body2" sx={{ color: '#2e7d32', ml: 1 }}>
+                        (осталось: {attemptsLeft})
+                      </Typography>
+                    )}
+                  </Typography>
+                  
+                  {maxAttempts !== 0 && (
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={(attemptsUsed / maxAttempts) * 100} 
+                      sx={{ 
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: 'action.disabledBackground',
+                        '& .MuiLinearProgress-bar': {
+                          backgroundColor: attemptsUsed >= maxAttempts ? '#d32f2f' : 
+                                         hasUnfinishedAttempt ? '#ed6c02' : '#2e7d32'
+                        }
+                      }}
+                    />
+                  )}
+                </Box>
+              </Box>
+            </Box>
+          </Grid>
+          
+          {/* Правая часть: Баллы и кнопки */}
+          <Grid item xs={12} md={4}>
+            <Box sx={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              alignItems: 'flex-end',
+              height: '100%',
+              justifyContent: 'space-between'
+            }}>
+              {isCompleted ? (
+                <Box sx={{ textAlign: 'right', mb: 2 }}>
+                  <Typography variant="h3" fontWeight="bold" sx={{ 
+                    color: getScoreColor(percentage),
+                    lineHeight: 1,
+                    mb: 0.5
+                  }}>
+                    {score}/{maxScore}
+                  </Typography>
+                  <Typography variant="h5" sx={{ 
+                    color: getScoreColor(percentage),
+                    opacity: 0.8,
+                    fontWeight: 600
+                  }}>
+                    ({percentage}%)
+                  </Typography>
+                </Box>
+              ) : (
+                <Box sx={{ textAlign: 'right', mb: 2 }}>
+                  <Typography variant="body1" sx={{ color: 'text.secondary', fontWeight: 600 }}>
+                    Проходной: {test.passing_score || 'Не задан'}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    Лимит: {test.time_limit || 'Не ограничен'} мин.
+                  </Typography>
+                </Box>
+              )}
+              
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<Info />}
+                  onClick={() => {
+                    setSelectedTest(test);
+                    setTestModalOpen(true);
+                  }}
+                  sx={{
+                    borderRadius: 1,
+                    textTransform: 'none',
+                    fontWeight: 600
+                  }}
+                >
+                  Подробнее
+                </Button>
+                
+                {canTakeTest && (
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={hasUnfinishedAttempt ? <Replay /> : <PlayCircleOutline />}
+                    onClick={() => handleStartTest(test.id, test.assignment_id)}
+                    sx={{
+                      borderRadius: 1,
+                      textTransform: 'none',
+                      fontWeight: 600,
+                      backgroundColor: hasUnfinishedAttempt ? '#ed6c02' : '#1976d2',
+                      '&:hover': {
+                        backgroundColor: hasUnfinishedAttempt ? '#e65100' : '#1565c0'
+                      }
+                    }}
+                  >
+                    {hasUnfinishedAttempt ? 'Продолжить' : 'Пройти'}
+                  </Button>
+                )}
+                
+                {!canTakeTest && isTestActive && !hasAttemptsLeft && maxAttempts !== 0 && (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    disabled
+                    sx={{
+                      borderRadius: 1,
+                      textTransform: 'none',
+                      fontWeight: 600,
+                      borderColor: '#d32f2f',
+                      color: '#d32f2f'
+                    }}
+                  >
+                    Лимит попыток
+                  </Button>
+                )}
+                
+                {!isTestActive && (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    disabled
+                    sx={{
+                      borderRadius: 1,
+                      textTransform: 'none',
+                      fontWeight: 600
+                    }}
+                  >
+                    {!isStarted ? 'Еще не начался' : 'Завершен'}
+                  </Button>
+                )}
+                
+                {isCompleted && (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<Visibility />}
+                    onClick={() => handleViewResults(test.id, test.assignment_id)}
+                    sx={{
+                      borderRadius: 1,
+                      textTransform: 'none',
+                      fontWeight: 600
+                    }}
+                  >
+                    Результаты
+                  </Button>
+                )}
+                
+                {(isCreator || isAdmin) && (
+                  <IconButton
+                    size="small"
+                    color="error"
+                    onClick={() => handleDeleteAssignment(test.assignment_id, test.title)}
+                    title="Удалить назначение"
+                  >
+                    <Delete />
+                  </IconButton>
+                )}
+              </Box>
+            </Box>
+          </Grid>
+        </Grid>
+      </Card>
+    </Grid>
+  );
+})}
             </Grid>
-          );
-        })}
-      </Grid>
-    )}
-  </Box>
-)}
+          )}
+        </Box>
+      )}
 
       {/* ВКЛАДКА 3: СТАТИСТИКА */}
-      {activeTab === 2  && (
+      {activeTab === 2 && (
         <>
           {!groupStats ? (
             <Alert severity="warning">
