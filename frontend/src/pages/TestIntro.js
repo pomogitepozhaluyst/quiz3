@@ -67,70 +67,80 @@ const TestIntro = () => {
     }
   };
 
-  const startTest = async () => {
-    setCreatingSession(true);
-    setError('');
+const startTest = async () => {
+  setCreatingSession(true);
+  setError('');
+  
+  try {
+    console.log('🚀 [startTest] Функция вызвана');
     
-    try {
-      console.log('🎯 Начинаем тест с ID:', testId);
-      
-      // Получаем assignment_id из query параметров (если есть)
-      const searchParams = new URLSearchParams(location.search);
-      const assignmentId = searchParams.get('assignment');
-      const sessionId = searchParams.get('session'); // Если пришли с существующей сессией
-      
-      console.log('📌 Параметры из URL:', { assignmentId, sessionId });
-      
-      // Если есть sessionId, используем существующую сессию
-      if (sessionId) {
-        console.log('🔄 Продолжаем существующую сессию:', sessionId);
-        navigate(`/test/${testId}/take`, { 
-          state: { 
-            sessionId: parseInt(sessionId),
-            testData: test 
-          } 
-        });
-        return;
-      }
-      
-      // Создаем новую сессию
-      const sessionData = {
-        test_id: parseInt(testId)
-      };
-      
-      // Если есть assignment_id, добавляем его
-      if (assignmentId) {
-        sessionData.assignment_id = parseInt(assignmentId);
-      }
-      
-      console.log('📤 Отправляем данные сессии:', sessionData);
-      const sessionResponse = await api.post('/test-sessions/', sessionData);
-      console.log('✅ Сессия создана:', sessionResponse.data);
-      
-      // Переходим к прохождению теста
+    const searchParams = new URLSearchParams(location.search);
+    const assignmentId = searchParams.get('assignment');
+    const sessionId = searchParams.get('session');
+    
+    console.log('🔍 Параметры из URL:', { 
+      assignmentId, 
+      sessionId,
+      locationSearch: location.search,
+      fullURL: window.location.href
+    });
+    
+    // Если есть sessionId, используем существующую сессию
+    if (sessionId) {
+      console.log('🔄 Продолжаем существующую сессию:', sessionId);
       navigate(`/test/${testId}/take`, { 
         state: { 
-          sessionId: sessionResponse.data.id,
-          testData: test 
+          sessionId: parseInt(sessionId),
+          testData: test,
+          assignmentId: assignmentId ? parseInt(assignmentId) : null
         } 
       });
-      
-    } catch (error) {
-      console.error('❌ Ошибка создания сессии:', error);
-      console.error('URL:', error.config?.url);
-      console.error('Status:', error.response?.status);
-      console.error('Data:', error.response?.data);
-      
-      if (error.response?.status === 400 && 
-          error.response.data.detail?.includes('Превышено')) {
-        setError('Превышено максимальное количество попыток для этого теста');
-      } else {
-        setError('Ошибка при запуске теста: ' + (error.response?.data?.detail || error.message));
-      }
-    } finally {
-      setCreatingSession(false);
+      return;
     }
-  };
+    
+    // Создаем новую сессию
+    const sessionData = {
+      test_id: parseInt(testId)
+    };
+    
+    // Если есть assignment_id, добавляем его
+    if (assignmentId) {
+      sessionData.assignment_id = parseInt(assignmentId);
+      console.log('✅ Assignment ID добавлен в данные сессии:', sessionData.assignment_id);
+    } else {
+      console.warn('⚠️ Assignment ID отсутствует!');
+    }
+    
+    console.log('📤 Отправляем данные сессии:', sessionData);
+    const sessionResponse = await api.post('/test-sessions/', sessionData);
+    console.log('✅ Сессия создана:', sessionResponse.data);
+    
+    // ВАЖНО: ПЕРЕХОДИМ НА СТРАНИЦУ ПРОХОЖДЕНИЯ ТЕСТА
+    console.log('🔄 Переходим на страницу теста...');
+    navigate(`/test/${testId}/take`, { 
+      state: { 
+        sessionId: sessionResponse.data.id,
+        testData: test,
+        assignmentId: assignmentId ? parseInt(assignmentId) : null
+      } 
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка создания сессии:', error);
+    console.error('URL:', error.config?.url);
+    console.error('Status:', error.response?.status);
+    console.error('Data:', error.response?.data);
+    
+    if (error.response?.status === 400 && 
+        error.response.data.detail?.includes('Превышено')) {
+      setError('Превышено максимальное количество попыток для этого теста');
+    } else {
+      setError('Ошибка при запуске теста: ' + (error.response?.data?.detail || error.message));
+    }
+  } finally {
+    setCreatingSession(false);
+  }
+};
 
 const analyzeQuestionTypes = (questions) => {
   if (!questions || !questions.length) return [];

@@ -164,26 +164,53 @@ const testsWithDetails = await Promise.all(
 
   // ========== ОБРАБОТЧИКИ ==========
 
-  const handleStartTest = async (testId, assignmentId) => {
-    try {
-      // Сначала перенаправляем на страницу введения
-      navigate(`/test/${testId}/intro`, {
-        state: {
-          testId,
-          assignmentId,
-          groupId
-        }
-      });
-      
-    } catch (err) {
-      const errorMsg = err.response?.data?.detail || 'Ошибка начала теста';
+const handleStartTest = async (testId, assignmentId) => {
+  try {
+    console.log('🎯 [handleStartTest] Начинаем тест:', { 
+      testId, 
+      assignmentId,
+      type_testId: typeof testId,
+      type_assignmentId: typeof assignmentId 
+    });
+    
+    if (!assignmentId) {
+      console.error('❌ CRITICAL: assignmentId не передан!');
       setSnackbar({
         open: true,
-        message: errorMsg,
+        message: 'Ошибка: не найден идентификатор назначения теста',
         severity: 'error'
       });
+      return;
     }
-  };
+    
+    if (!testId) {
+      console.error('❌ CRITICAL: testId не передан!');
+      return;
+    }
+    
+    console.log('🔄 Переходим на страницу теста...');
+    console.log('📝 URL:', `/test/${testId}/intro?assignment=${assignmentId}`);
+    
+    // ВАЖНО: используем replace вместо push, чтобы избежать дублирования
+    navigate(`/test/${testId}/intro?assignment=${assignmentId}`, {
+      state: {
+        testId: Number(testId),
+        assignmentId: Number(assignmentId),
+        groupId: Number(groupId)
+      },
+      replace: true  // ← Это важно!
+    });
+    
+  } catch (err) {
+    console.error('❌ Ошибка в handleStartTest:', err);
+    const errorMsg = err.response?.data?.detail || 'Ошибка начала теста';
+    setSnackbar({
+      open: true,
+      message: errorMsg,
+      severity: 'error'
+    });
+  }
+};
 
   const handleViewResults = (testId, assignmentId) => {
     // Временное решение - показываем снекбар

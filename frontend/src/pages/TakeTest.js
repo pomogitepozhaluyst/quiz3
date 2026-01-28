@@ -431,6 +431,7 @@ const TakeTest = () => {
   const location = useLocation();
   const { user } = useAuth();
   
+  const assignmentId = location.state?.assignmentId;
   const [test, setTest] = useState(null);
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [answers, setAnswers] = useState({});
@@ -580,117 +581,138 @@ const TakeTest = () => {
     });
   };
 
-  const saveAnswer = async (questionId, answerData) => {
+const saveAnswer = async (questionId, answerData) => {
+  try {
+    if (!sessionId) {
+      console.error('Нет sessionId');
+      return;
+    }
+
+    // ДОБАВЬ assignment_id в данные для отправки
+    const dataToSend = {
+      ...answerData,
+      assignment_id: assignmentId,  // ← КЛЮЧЕВОЕ ДОБАВЛЕНИЕ!
+      test_id: test?.id
+    };
+
+    console.log('📤 Сохранение ответа с данными:', {
+      sessionId,
+      questionId,
+      assignmentId,
+      testId: test?.id,
+      data: dataToSend
+    });
+
+    const response = await api.post(`/test-sessions/${sessionId}/answers`, dataToSend);
+    
+    // Сохраняем результат проверки
+    setQuestionResults(prev => ({
+      ...prev,
+      [questionId]: {
+        is_correct: response.data?.is_correct || false,
+        points_earned: response.data?.points_earned || 0,
+        saved: true
+      }
+    }));
+    
+    // Сохраняем ответ
+    setSavedAnswers(prev => ({
+      ...prev,
+      [questionId]: dataToSend  // ← сохраняем с assignment_id
+    }));
+    
+    console.log('✅ Ответ сохранен:', response.data);
+    
+  } catch (error) {
+    console.error('❌ Ошибка сохранения ответа:', error.response?.data || error.message);
+    throw error;
+  }
+};
+
+const handleNext = async () => {
+  const currentQuestionData = getCurrentQuestion();
+  
+  if (currentQuestionData && sessionId) {
     try {
-      if (!sessionId) {
-        console.error('Нет sessionId');
-        return;
+      let answerData = {
+        question_id: currentQuestionData.id,
+        time_spent: 60 - (questionTimeLeft || 0),
+        test_id: test?.id,
+        assignment_id: assignmentId  // ← ДОБАВЬ И ЗДЕСЬ
+      };
+
+      const currentAnswer = answers[currentQuestionData.id];
+      
+      if (currentAnswer) {
+        if (currentAnswer.type === 'text' && currentAnswer.text) {
+          answerData.answer_text = currentAnswer.text;
+        } else if ((currentAnswer.type === 'single_choice' || currentAnswer.type === 'multiple_choice') && 
+                   currentAnswer.selected_options) {
+          answerData.selected_options = JSON.stringify(currentAnswer.selected_options);
+        }
+        
+        // Сохраняем ответ на сервере
+        await saveAnswer(currentQuestionData.id, answerData);
       }
 
-      const response = await api.post(`/test-sessions/${sessionId}/answers`, answerData);
-      
-      // Сохраняем результат проверки
-      setQuestionResults(prev => ({
-        ...prev,
-        [questionId]: {
-          is_correct: response.data?.is_correct || false,
-          points_earned: response.data?.points_earned || 0,
-          saved: true
-        }
-      }));
-      
-      // Сохраняем ответ
-      setSavedAnswers(prev => ({
-        ...prev,
-        [questionId]: answerData
-      }));
-      
-      console.log('✅ Ответ сохранен:', response.data);
-      
     } catch (error) {
       console.error('❌ Ошибка сохранения ответа:', error);
-      throw error;
+      setError(`Ошибка сохранения: ${error.response?.data?.detail || error.message}`);
     }
-  };
+  }
 
-  const handleNext = async () => {
-    const currentQuestionData = getCurrentQuestion();
+  // Переход к следующему вопросу
+  if (currentQuestion < test.questions.length - 1) {
+    setCurrentQuestion(prev => {
+      const nextIndex = prev + 1;
+      const nextQuestion = getCurrentQuestionData(test, nextIndex);
+      setQuestionTimeLeft(nextQuestion?.time_limit || 60);
+      setShake(false);
+      return nextIndex;
+    });
+  } else {
+    console.log('🏁 Последний вопрос - завершаем тест');
+    await handleFinishTest();
+  }
+};
+
+const handleFinishTest = async () => {
+  try {
+    setSubmitting(true);
+    console.log('🔄 Завершение теста:', {
+      sessionId,
+      testId: test?.id,
+      assignmentId
+    });
     
-    if (currentQuestionData && sessionId) {
-      try {
-        let answerData = {
-          question_id: currentQuestionData.id,
-          time_spent: 60 - (questionTimeLeft || 0),
-          test_id: test?.id
-        };
-
-        const currentAnswer = answers[currentQuestionData.id];
-        
-        if (currentAnswer) {
-          if (currentAnswer.type === 'text' && currentAnswer.text) {
-            answerData.answer_text = currentAnswer.text;
-          } else if ((currentAnswer.type === 'single_choice' || currentAnswer.type === 'multiple_choice') && 
-                     currentAnswer.selected_options) {
-            answerData.selected_options = JSON.stringify(currentAnswer.selected_options);
-          }
-          
-          // Сохраняем ответ на сервере
-          await saveAnswer(currentQuestionData.id, answerData);
-        }
-
-      } catch (error) {
-        console.error('❌ Ошибка сохранения ответа:', error);
-        setError(`Ошибка сохранения: ${error.response?.data?.detail || error.message}`);
-      }
-    }
-
-    // Переход к следующему вопросу
-    if (currentQuestion < test.questions.length - 1) {
-      setCurrentQuestion(prev => {
-        const nextIndex = prev + 1;
-        const nextQuestion = getCurrentQuestionData(test, nextIndex);
-        setQuestionTimeLeft(nextQuestion?.time_limit || 60);
-        setShake(false);
-        return nextIndex;
-      });
-    } else {
-      await handleFinishTest();
-    }
-  };
-
-  const handleFinishTest = async () => {
+    // ДОБАВЬ endpoint который принимает assignment_id
+    const finishData = {
+      test_id: test?.id,
+      assignment_id: assignmentId
+    };
+    
+    // Пробуем оба endpoint
+    let response;
     try {
-      setSubmitting(true);
-      console.log('🔄 Завершение теста, sessionId:', sessionId);
-      
-      // Завершаем тест
-      const response = await api.post(`/test-sessions/${sessionId}/finish`);
-      
-      console.log('✅ Тест завершен:', response.data);
-      setCompletionData(response.data);
-      setTestCompleted(true);
-      setShowResults(true);
-      
-    } catch (error) {
-      console.error('❌ Ошибка завершения теста:', error);
-      
-      // Пробуем альтернативный endpoint
-      if (error.response?.status === 404) {
-        try {
-          const oldResponse = await api.post(`/test-sessions/${sessionId}/complete`);
-          setCompletionData(oldResponse.data);
-          setTestCompleted(true);
-          setShowResults(true);
-        } catch (oldError) {
-          setError(`Ошибка завершения теста: ${oldError.response?.data?.detail || oldError.message}`);
-        }
-      } else {
-        setError(`Ошибка завершения теста: ${error.response?.data?.detail || error.message}`);
-      }
-    } finally {
-      setSubmitting(false);
+      response = await api.post(`/test-sessions/${sessionId}/finish`, finishData);
+      console.log('✅ Тест завершен (через /finish):', response.data);
+    } catch (finishError) {
+      console.log('🔄 Пробуем /complete...');
+      response = await api.post(`/test-sessions/${sessionId}/complete`, finishData);
+      console.log('✅ Тест завершен (через /complete):', response.data);
     }
-  };
+    
+    setCompletionData(response.data);
+    setTestCompleted(true);
+    setShowResults(true);
+    
+  } catch (error) {
+    console.error('❌ Ошибка завершения теста:', error.response?.data || error.message);
+    setError(`Ошибка завершения теста: ${error.response?.data?.detail || error.message}`);
+  } finally {
+    setSubmitting(false);
+  }
+};
 
   const handleLeaveTest = () => {
     if (!testCompleted) {
